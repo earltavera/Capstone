@@ -146,7 +146,7 @@ def llm_extract_structured_data(text, file_name):
     
     try:
         model = genai.GenerativeModel(
-            "gemini-1.5-flash",
+            "gemini-2.0-flash",
             generation_config={"response_mime_type": "application/json"}
         )
         prompt = f"{system_instruction}\n\nDOCUMENT TEXT:\n{text[:25000]}" # Cap text length to prevent token limits
@@ -388,7 +388,7 @@ with st.expander("AI Data Chatbot", expanded=True):
 
                     answer = ""
                     if llm_provider == "Gemini AI" and google_api_key:
-                        model = genai.GenerativeModel("gemini-2.5-flash")
+                        model = genai.GenerativeModel("gemini-2.0-flash")
                         response = model.generate_content(f"{system_message}\n\nUser Query: {chat_input}")
                         answer = response.text
                     elif llm_provider == "Groq AI" and groq_api_key:
