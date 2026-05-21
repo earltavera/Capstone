@@ -1,0 +1,24 @@
+streamlit
+pandas
+PyMuPDF
+plotly
+
+# Pinned versions for stability on Streamlit Cloud
+torch
+torchvision
+transformers
+sentence-transformers
+huggingface-hub
+
+geopy
+python-dotenv
+requests
+pytz
+openai
+google-generativeai
+langchain-groq
+pdf2image
+pytesseract
+python-dateutil
+pdfplumber
+tabulate
