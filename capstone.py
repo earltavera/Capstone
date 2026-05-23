@@ -134,8 +134,9 @@ def llm_extract_structured_data(text, file_name):
     }
     """
     try:
-        if groq_api_key:
-            chat_groq = ChatGroq(groq_api_key=groq_api_key, model_name="llama3-8b-8192")
+       if groq_api_key:
+            # Change model to llama-3.3-70b-versatile for high-quality JSON extraction
+            chat_groq = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.3-70b-versatile")
             response = chat_groq.invoke([
                 SystemMessage(content=system_instruction),
                 HumanMessage(content=f"DOCUMENT TEXT:\n{text[:20000]}")
@@ -381,7 +382,8 @@ with st.expander("AI Data Chatbot Contextual Engine", expanded=True):
                         response = model.generate_content(f"{system_message}\n\nUser Query: {chat_input}")
                         answer = response.text
                     elif llm_provider == "Groq AI" and groq_api_key:
-                        chat_groq = ChatGroq(groq_api_key=groq_api_key, model_name="llama3-8b-8192")
+                        # Change 'llama3-8b-8192' to 'llama-3.1-8b-instant'
+                        chat_groq = ChatGroq(groq_api_key=groq_api_key, model_name="llama-3.1-8b-instant")
                         response = chat_groq.invoke([SystemMessage(content=system_message), HumanMessage(content=chat_input)])
                         answer = response.content
                     else:
