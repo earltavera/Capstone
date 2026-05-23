@@ -113,79 +113,54 @@ def check_expiry(expiry_date):
 @st.cache_data(show_spinner=False)
 def llm_extract_structured_data(text, file_name):
     """
-    Passes raw PDF text to Gemini to extract specific data points 
-    required by Auckland Council into a structured JSON format with robust retry limits.
+    Extracts data using Groq AI as a faster option with higher rate limits.
     """
     system_instruction = """
     You are an expert environmental regulatory assistant for Auckland Council. 
     Analyze the provided Air Discharge Consent document and extract the information into a strict JSON format.
     
-    Return ONLY a valid JSON object matching this schema exactly. Do not include markdown blocks.
+    Return ONLY a valid JSON object matching this schema exactly. Do not include markdown blocks or any intro/outro text.
     {
       "Resource Consent Numbers": "string",
       "Company Name": "string",
-      "Address": "string (just the physical site address)",
+      "Address": "string",
       "Issue Date": "DD/MM/YYYY",
       "Expiry Date": "DD/MM/YYYY",
       "AUP_E14_Rules_Infringed": [
-        {
-          "rule": "string (e.g., E14.4.1(A14))",
-          "activity_status": "string (Controlled, Restricted Discretionary, Discretionary, or Non-Complying)"
-        }
+        {"rule": "string", "activity_status": "string"}
       ],
-      "Industrial_Activity_Category": "string (Categorize the main activity into a short phrase, e.g., Abrasive Blasting, Chemical Manufacturing, Food Processing, Crematoria, Spray Painting, Mineral Processing)",
-      "Mitigation_Measures": ["string", "string"]
+      "Industrial_Activity_Category": "string",
+      "Mitigation_Measures": ["string"]
     }
-    
-    Rules for Extraction:
-    - If a string cannot be found, output "Not specified".
-    - If a list cannot be found, output [].
-    - Under Mitigation_Measures, list physical equipment or actions mentioned in conditions (e.g., Baghouse filter, 15m Stack height, Wet scrubber, Water carts).
-    - Deduce the activity status for the E14 rules directly from the document text.
     """
-    
-    # Prune incoming text string to roughly 15,000 chars to respect free tier token limits 
-    trimmed_text = text[:8000] 
-    
-    max_retries = 5
-    initial_delay = 5  # Start structural recovery at a baseline 5s delay
-    
-    for attempt in range(max_retries):
-        try:
-            model = genai.GenerativeModel(
-                "gemini-2.0-flash",
-                generation_config={"response_mime_type": "application/json"}
-            )
-            prompt = f"{system_instruction}\n\nDOCUMENT TEXT:\n{trimmed_text}"
+    try:
+        if groq_api_key:
+            chat_groq = ChatGroq(groq_api_key=groq_api_key, model_name="llama3-8b-8192")
+            response = chat_groq.invoke([
+                SystemMessage(content=system_instruction),
+                HumanMessage(content=f"DOCUMENT TEXT:\n{text[:20000]}")
+            ])
             
-            response = model.generate_content(prompt)
-            extracted_data = json.loads(response.text)
-            
-            # Map structural text blob back for vector mapping/search consistency
-            extracted_data["Text Blob"] = text 
+            # Clean up potential markdown formatting if the model includes it
+            clean_json = response.content.replace("```json", "").replace("```", "").strip()
+            extracted_data = json.loads(clean_json)
+            extracted_data["Text Blob"] = text
             return extracted_data
-            
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "Quota exceeded" in error_msg:
-                if attempt < max_retries - 1:
-                    sleep_time = initial_delay * (2 ** attempt)
-                    st.warning(f"Rate limit hit for {file_name}. Backing off. Retrying in {sleep_time}s (Attempt {attempt + 1}/{max_retries})...")
-                    time.sleep(sleep_time)
-                    continue
-            
-            # Drop structure to standard exception default mappings if retry bounds fail
-            return {
-                "Resource Consent Numbers": "Quota/API Error",
-                "Company Name": "Quota/API Error",
-                "Address": "Not specified",
-                "Issue Date": "Not specified",
-                "Expiry Date": "Not specified",
-                "AUP_E14_Rules_Infringed": [],
-                "Industrial_Activity_Category": "Error",
-                "Mitigation_Measures": [],
-                "Text Blob": text
-            }
+    except Exception as e:
+        st.warning(f"Groq extraction failed for {file_name}: {e}")
+        
+    # Return default empty dictionary if it fails
+    return {
+        "Resource Consent Numbers": "Extraction Error",
+        "Company Name": "Extraction Error",
+        "Address": "Not specified",
+        "Issue Date": "Not specified",
+        "Expiry Date": "Not specified",
+        "AUP_E14_Rules_Infringed": [],
+        "Industrial_Activity_Category": "Error",
+        "Mitigation_Measures": [],
+        "Text Blob": text
+    }
 
 def log_ai_chat(question, answer):
     timestamp = datetime.now(pytz.timezone("Pacific/Auckland")).strftime("%Y-%m-%d %H:%M:%S")
