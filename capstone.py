@@ -145,7 +145,7 @@ def llm_extract_structured_data(text, file_name):
     """
     
     # Prune incoming text string to roughly 15,000 chars to respect free tier token limits 
-    trimmed_text = text[:15000] 
+    trimmed_text = text[:10000] 
     
     max_retries = 5
     initial_delay = 5  # Start structural recovery at a baseline 5s delay
