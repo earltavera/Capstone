@@ -158,7 +158,7 @@ selected_industry = st.sidebar.selectbox("Select Industrial Activity Type:", opt
 unique_activities = ["All"] + sorted(list(df["Activity_Type"].unique()))
 selected_activity = st.sidebar.selectbox("Select Activity Risk Category:", options=unique_activities)
 
-# Drop-Down Filter for Consent Status
+# New Drop-Down Filter for Consent Status
 unique_statuses = ["All", "🟢 Valid", "🔴 Expired"]
 selected_status = st.sidebar.selectbox("Select Consent Status:", options=unique_statuses)
 
@@ -203,7 +203,7 @@ if not filtered_df.empty:
         color="Status", # Color points on the map by Valid vs Expired!
         color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
         size=filtered_df["Infringement_Count"] + 2,
-        zoom=15,
+        zoom=10,
         height=450
     )
     fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
