@@ -30,24 +30,28 @@ st.markdown("---")
 # 2. DATA PROCESSING PIPELINE (With Dates & Expiration Status)
 # -----------------------------------------------------------------------------
 def generate_dates_and_status(duration_years, is_expired_bias=False):
-    """Generates realistic issued/expiry dates and evaluates current validity status."""
+    """Generates realistic issued/expiry dates with explicit integer casting."""
     today = datetime.now()
+    
+    # Ensure the duration is a standard Python int
+    dur = int(duration_years)
     
     if is_expired_bias:
         # Simulate an older consent that has already expired
-        days_ago = int(np.random.randint((duration_years * 365) + 1, (duration_years * 365) + 3000))
+        days_ago = int(np.random.randint((dur * 365) + 1, (dur * 365) + 3000))
     else:
         # Simulate a currently active consent
-        days_ago = int(np.random.randint(1, duration_years * 365))
+        days_ago = int(np.random.randint(1, dur * 365))
         
-    date_issued = today - timedelta(days=days_ago)
-    expiry_date = date_issued + timedelta(days=duration_years * 365)
+    # Cast calculation to int() to satisfy timedelta requirements
+    date_issued = today - timedelta(days=int(days_ago)) 
+    expiry_date = date_issued + timedelta(days=int(dur * 365)) 
     
     # Determine status based on today's date
     status = "🔴 Expired" if expiry_date < today else "🟢 Valid"
     
     return date_issued.strftime("%Y-%m-%d"), expiry_date.strftime("%Y-%m-%d"), status
-
+    
 def parse_uploaded_file(uploaded_file):
     """Reads an uploaded PDF or TXT file and extracts/simulates structured data."""
     file_name = uploaded_file.name
