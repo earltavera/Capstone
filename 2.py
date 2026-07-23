@@ -3,8 +3,6 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import requests
-import re
-import difflib
 from datetime import datetime, timedelta
 
 # Optional import for PDF text extraction (run: pip install pypdf)
@@ -19,11 +17,11 @@ except ImportError:
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="AI-Driven Air Discharge Consents Dashboard",
-    page_icon="💨",
+    page_icon="🇳🇿",
     layout="wide"
 )
 
-st.title("💨 AI-Driven Dashboard: Air Discharge Consents in Auckland")
+st.title("🇳🇿 AI-Driven Dashboard: Air Discharge Consents in Auckland")
 st.markdown("""
 *This dashboard analyzes industrial air discharge consents data extracted via LLM/NLP pipelines to support compliance monitoring and regulatory insights.*
 """)
@@ -188,68 +186,23 @@ if selected_status != "All":
     filtered_df = filtered_df[filtered_df["Status"] == selected_status]
 
 # -----------------------------------------------------------------------------
-# 4. SMART FUZZY & TOKENIZED GLOBAL SEARCH
+# 4. GLOBAL SEARCH & LIVE WEATHER MONITORING BAR
 # -----------------------------------------------------------------------------
 st.markdown("### 🔍 Global Information Search")
 search_query = st.text_input(
     label="Search anything:",
-    placeholder="Search anything (e.g., 'show active chemical in 2025', 'biofilter BUN10002', 'chemikal')...",
+    placeholder="Type a Consent ID, rule, status (Valid/Expired), or date (e.g. 2025) to instantly filter...",
     label_visibility="collapsed"
 )
 
-if search_query.strip():
-    # Common conversational stop-words to ignore
-    STOP_WORDS = {
-        "show", "me", "find", "get", "list", "all", "the", "a", "an", "in", 
-        "of", "for", "with", "and", "or", "to", "at", "is", "are", "where", 
-        "that", "have", "has", "data", "consent", "consents", "dashboard"
-    }
+if search_query:
+    search_mask = np.column_stack([
+        filtered_df[col].astype(str).str.contains(search_query, case=False, na=False) 
+        for col in filtered_df.columns
+    ]).any(axis=1)
+    filtered_df = filtered_df[search_mask]
 
-    # Tokenize input query into words, lowercased
-    tokens = re.findall(r'\b\w+\b', search_query.lower())
-    clean_tokens = [t for t in tokens if t not in STOP_WORDS]
-    
-    # Fallback to raw tokens if all words were stop-words
-    if not clean_tokens:
-        clean_tokens = tokens
-
-    # Build a vocabulary of unique values present across the dataframe for fuzzy matching
-    all_corpus_terms = set()
-    for col in filtered_df.columns:
-        all_corpus_terms.update(filtered_df[col].astype(str).str.lower().unique())
-    
-    # Tokenize words inside corpus values for finer vocabulary resolution
-    vocab_words = set()
-    for item in all_corpus_terms:
-        vocab_words.update(re.findall(r'\b\w+\b', item))
-
-    # Perform token-by-token filtering
-    combined_mask = np.ones(len(filtered_df), dtype=bool)
-
-    for token in clean_tokens:
-        # Check standard string matching across any column
-        token_mask = np.column_stack([
-            filtered_df[col].astype(str).str.contains(token, case=False, na=False) 
-            for col in filtered_df.columns
-        ]).any(axis=1)
-
-        # If direct match fails, attempt fuzzy lookup for minor typos
-        if not token_mask.any():
-            close_matches = difflib.get_close_matches(token, list(vocab_words), n=2, cutoff=0.75)
-            if close_matches:
-                fuzzy_mask = np.zeros(len(filtered_df), dtype=bool)
-                for matched_word in close_matches:
-                    fuzzy_mask |= np.column_stack([
-                        filtered_df[col].astype(str).str.contains(matched_word, case=False, na=False) 
-                        for col in filtered_df.columns
-                    ]).any(axis=1)
-                token_mask = fuzzy_mask
-
-        combined_mask &= token_mask
-
-    filtered_df = filtered_df[combined_mask]
-
-# --- Live Environmental & Meteorological Widget ---
+# --- NEW: Live Environmental & Meteorological Widget ---
 env_data = fetch_auckland_environmental_data()
 if env_data:
     st.markdown("#### 🌤️ Live Auckland Ambient Conditions")
@@ -259,6 +212,7 @@ if env_data:
     m_col2.metric("Wind Speed", f"{env_data['wind']} km/h", border=True)
     m_col3.metric("Relative Humidity", f"{env_data['humidity']}%", border=True)
     
+    # Simple AQI status mapping
     aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
     m_col4.metric("Air Quality Index", f"{aqi_text}", border=True)
 
@@ -308,7 +262,7 @@ if not filtered_df.empty:
         st.metric("Avg. Duration", f"{filtered_df['Consent_Duration_Years'].mean():.1f} Yrs", border=True)
     st.markdown("---")
 else:
-    st.error("⚠️ No entries match your active drop-downs or search query. Try removing keywords or typos.")
+    st.error("⚠️ No entries match your active drop-downs or text search keywords.")
     st.stop()
 
 # -----------------------------------------------------------------------------
