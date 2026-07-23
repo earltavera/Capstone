@@ -147,7 +147,7 @@ def load_default_mock_data():
     return pd.DataFrame(data)
 
 # -----------------------------------------------------------------------------
-# 3. SIDEBAR CONTROLS
+# 3. SIDEBAR CONTROLS & HELP LINK
 # -----------------------------------------------------------------------------
 st.sidebar.header("📁 1. Upload Consents")
 uploaded_files = st.sidebar.file_uploader(
@@ -177,6 +177,38 @@ selected_activity = st.sidebar.selectbox("Select Activity Risk Category:", optio
 unique_statuses = ["All", "🟢 Valid", "🔴 Expired"]
 selected_status = st.sidebar.selectbox("Select Consent Status:", options=unique_statuses)
 
+st.sidebar.markdown("---")
+
+# --- NEW: HELP LINK / POPOVER IN SIDEBAR ---
+with st.sidebar.popover("❓ How to Use This Dashboard"):
+    st.markdown("### 📘 User Guide & Instructions")
+    st.markdown("""
+    Follow these simple steps to navigate and analyze air discharge consents:
+
+    1. **Upload Documents (Optional):**
+       * Drop your PDF or TXT consent files into the **Upload Consents** box in the sidebar.
+       * The NLP pipeline will extract key data fields automatically.
+       * *Default:* If no file is uploaded, standard Auckland baseline data is displayed.
+
+    2. **Filter Your View:**
+       * Use the sidebar drop-downs (**Industry Type**, **Activity Risk**, or **Status**) to narrow down records.
+
+    3. **Global Search Bar:**
+       * Type keywords in the search bar (e.g., `BUN10002`, `Biofilters`, `Expired`, `2025`) to instantly isolate specific records.
+
+    4. **Analyze Map & Live Weather:**
+       * Review the live ambient conditions for Auckland.
+       * Hover over map pins to check individual plant locations, risk categories, and infringement histories.
+
+    5. **Explore Analytical Tabs:**
+       * **Tab 1 (Rules & Risk):** Check high-risk AUP E14 rule infringements.
+       * **Tab 2 (Discharges & Mitigations):** Analyze industry distributions and active air scrubbing controls.
+       * **Tab 3 (Duration & Patterns):** Review consent timeline distributions.
+
+    6. **Inspect & Export Raw Data:**
+       * Scroll to the bottom table to view styled records (🟢 Valid vs 🔴 Expired).
+    """)
+
 filtered_df = df.copy()
 if selected_industry != "All":
     filtered_df = filtered_df[filtered_df["Industry_Type"] == selected_industry]
@@ -202,7 +234,7 @@ if search_query:
     ]).any(axis=1)
     filtered_df = filtered_df[search_mask]
 
-# --- NEW: Live Environmental & Meteorological Widget ---
+# --- Live Environmental & Meteorological Widget ---
 env_data = fetch_auckland_environmental_data()
 if env_data:
     st.markdown("#### 🌤️ Live Auckland Ambient Conditions")
