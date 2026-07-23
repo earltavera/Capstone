@@ -17,11 +17,11 @@ except ImportError:
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="AI-Driven Air Discharge Consents Dashboard",
-    page_icon="💨",
+    page_icon="🇳🇿",
     layout="wide"
 )
 
-st.title("💨 AI-Driven Dashboard: Air Discharge Consents in Auckland")
+st.title("🇳🇿 AI-Driven Dashboard: Air Discharge Consents in Auckland")
 st.markdown("""
 *This dashboard analyzes industrial air discharge consents data extracted via LLM/NLP pipelines to support compliance monitoring and regulatory insights.*
 """)
