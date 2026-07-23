@@ -21,6 +21,47 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS to make Tabs larger, bold, and bordered
+st.markdown("""
+<style>
+    /* Style the Tab buttons bar container */
+    div[data-baseweb="tab-list"] {
+        gap: 12px;
+        background-color: rgba(240, 242, 246, 0.4);
+        padding: 8px 12px;
+        border-radius: 12px;
+        border: 2px solid #31333F22;
+        margin-bottom: 20px;
+    }
+
+    /* Style each individual Tab button */
+    button[data-baseweb="tab"] {
+        font-size: 18px !important;
+        font-weight: 700 !important;
+        padding: 12px 24px !important;
+        border-radius: 8px !important;
+        border: 1px solid #d3d3d3 !important;
+        background-color: #ffffff !important;
+        transition: all 0.3s ease;
+    }
+
+    /* Hover effect on Tabs */
+    button[data-baseweb="tab"]:hover {
+        border-color: #ff4b4b !important;
+        color: #ff4b4b !important;
+        background-color: #fff5f5 !important;
+    }
+
+    /* Highlight Active Selected Tab */
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background-color: #ff4b4b !important;
+        color: white !important;
+        border: 2px solid #ff4b4b !important;
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.15);
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🇳🇿 AI-Driven Dashboard: Air Discharge Consents in Auckland")
 st.markdown("""
 *This dashboard analyzes industrial air discharge consents data extracted via LLM/NLP pipelines to support compliance monitoring and regulatory insights.*
@@ -179,7 +220,7 @@ selected_status = st.sidebar.selectbox("Select Consent Status:", options=unique_
 
 st.sidebar.markdown("---")
 
-# --- NEW: HELP LINK / POPOVER IN SIDEBAR ---
+# --- HELP LINK / POPOVER IN SIDEBAR ---
 with st.sidebar.popover("❓ How to Use This Dashboard"):
     st.markdown("### 📘 User Guide & Instructions")
     st.markdown("""
@@ -244,7 +285,6 @@ if env_data:
     m_col2.metric("Wind Speed", f"{env_data['wind']} km/h", border=True)
     m_col3.metric("Relative Humidity", f"{env_data['humidity']}%", border=True)
     
-    # Simple AQI status mapping
     aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
     m_col4.metric("Air Quality Index", f"{aqi_text}", border=True)
 
@@ -298,62 +338,69 @@ else:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 7. VISUALIZATION TABS
+# 7. ENHANCED VISUALIZATION TABS (Large & Bordered)
 # -----------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["📋 Rule Rankings & Risk", "🏭 Discharges & Mitigations", "⏳ Duration & Patterns"])
+tab1, tab2, tab3 = st.tabs([
+    "📋  TAB 1: Rule Rankings & Compliance Risks", 
+    "🏭  TAB 2: Discharges & Mitigation Profiles", 
+    "⏳  TAB 3: Consent Duration & Regulatory Patterns"
+])
 
 with tab1:
-    st.header("AUP E14 Rule Rankings & Compliance Risks")
-    col_left, col_right = st.columns(2)
-    with col_left:
-        st.subheader("1. Infringement Frequency by AUP E14 Rule")
-        rule_rankings = filtered_df.groupby("AUP_E14_Rule")["Infringement_Count"].sum().reset_index()
-        fig_rules = px.bar(
-            rule_rankings, x="Infringement_Count", y="AUP_E14_Rule", orientation="h",
-            labels={"Infringement_Count": "Total Infringements", "AUP_E14_Rule": "Rule Code"},
-            color="Infringement_Count", color_continuous_scale="Reds"
-        )
-        fig_rules.update_layout(yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig_rules, use_container_width=True)
+    with st.container(border=True):
+        st.header("AUP E14 Rule Rankings & Compliance Risks")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.subheader("1. Infringement Frequency by AUP E14 Rule")
+            rule_rankings = filtered_df.groupby("AUP_E14_Rule")["Infringement_Count"].sum().reset_index()
+            fig_rules = px.bar(
+                rule_rankings, x="Infringement_Count", y="AUP_E14_Rule", orientation="h",
+                labels={"Infringement_Count": "Total Infringements", "AUP_E14_Rule": "Rule Code"},
+                color="Infringement_Count", color_continuous_scale="Reds"
+            )
+            fig_rules.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_rules, use_container_width=True)
 
-    with col_right:
-        st.subheader("4. Infringed Rules by Activity Type")
-        risk_df = filtered_df.groupby(["Activity_Type", "AUP_E14_Rule"])["Infringement_Count"].sum().reset_index()
-        fig_risk = px.sunburst(
-            risk_df, path=["Activity_Type", "AUP_E14_Rule"], values="Infringement_Count",
-            color="Activity_Type", color_discrete_map={"Controlled": "#2ca02c", "Restricted Discretionary": "#ff7f0e", "Discretionary": "#d62728"}
-        )
-        st.plotly_chart(fig_risk, use_container_width=True)
+        with col_right:
+            st.subheader("4. Infringed Rules by Activity Type")
+            risk_df = filtered_df.groupby(["Activity_Type", "AUP_E14_Rule"])["Infringement_Count"].sum().reset_index()
+            fig_risk = px.sunburst(
+                risk_df, path=["Activity_Type", "AUP_E14_Rule"], values="Infringement_Count",
+                color="Activity_Type", color_discrete_map={"Controlled": "#2ca02c", "Restricted Discretionary": "#ff7f0e", "Discretionary": "#d62728"}
+            )
+            st.plotly_chart(fig_risk, use_container_width=True)
 
 with tab2:
-    st.header("Industrial Profile & Mitigation Profiles")
-    col_left, col_right = st.columns(2)
-    with col_left:
-        st.subheader("2. Main Consented Industrial Air Discharges")
-        industry_counts = filtered_df["Industry_Type"].value_counts().reset_index()
-        industry_counts.columns = ["Industry_Type", "Consent_Count"]
-        fig_ind = px.pie(industry_counts, values="Consent_Count", names="Industry_Type", hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-        st.plotly_chart(fig_ind, use_container_width=True)
+    with st.container(border=True):
+        st.header("Industrial Profile & Mitigation Profiles")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.subheader("2. Main Consented Industrial Air Discharges")
+            industry_counts = filtered_df["Industry_Type"].value_counts().reset_index()
+            industry_counts.columns = ["Industry_Type", "Consent_Count"]
+            fig_ind = px.pie(industry_counts, values="Consent_Count", names="Industry_Type", hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            st.plotly_chart(fig_ind, use_container_width=True)
 
-    with col_right:
-        st.subheader("3. Primary Engineering Mitigation Measures")
-        mitigation_counts = filtered_df["Mitigation_Measure"].value_counts().reset_index()
-        mitigation_counts.columns = ["Mitigation_Measure", "Count"]
-        fig_mit = px.bar(mitigation_counts, x="Count", y="Mitigation_Measure", orientation="h", color="Count", color_continuous_scale="Blues")
-        fig_mit.update_layout(yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig_mit, use_container_width=True)
+        with col_right:
+            st.subheader("3. Primary Engineering Mitigation Measures")
+            mitigation_counts = filtered_df["Mitigation_Measure"].value_counts().reset_index()
+            mitigation_counts.columns = ["Mitigation_Measure", "Count"]
+            fig_mit = px.bar(mitigation_counts, x="Count", y="Mitigation_Measure", orientation="h", color="Count", color_continuous_scale="Blues")
+            fig_mit.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_mit, use_container_width=True)
 
 with tab3:
-    st.header("5. Regulatory Duration Patterns")
-    st.subheader("Distribution of Consent Durations (1 to 30 Years)")
-    fig_dist = px.histogram(
-        filtered_df, x="Consent_Duration_Years", nbins=30,
-        labels={"Consent_Duration_Years": "Consent Duration (Years)"},
-        color="Status", barmode="stack",
-        color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"}
-    )
-    fig_dist.update_layout(xaxis=dict(tickmode='linear', tick0=1, dtick=1))
-    st.plotly_chart(fig_dist, use_container_width=True)
+    with st.container(border=True):
+        st.header("5. Regulatory Duration Patterns")
+        st.subheader("Distribution of Consent Durations (1 to 30 Years)")
+        fig_dist = px.histogram(
+            filtered_df, x="Consent_Duration_Years", nbins=30,
+            labels={"Consent_Duration_Years": "Consent Duration (Years)"},
+            color="Status", barmode="stack",
+            color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"}
+        )
+        fig_dist.update_layout(xaxis=dict(tickmode='linear', tick0=1, dtick=1))
+        st.plotly_chart(fig_dist, use_container_width=True)
 
 # -----------------------------------------------------------------------------
 # 8. EXTRACTED DATA EXPLORER
