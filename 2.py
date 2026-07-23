@@ -61,13 +61,13 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-st.title("🇳🇿 AI-Driven Dashboard: Air Discharge Consents in Auckland")
-
 # --- DYNAMIC TIME, DATE & LOCATION BANNER ---
 now = datetime.now()
 formatted_date = now.strftime("%A, %B %d, %Y")
 formatted_time = now.strftime("%I:%M %p")
+st.title("🇳🇿 AI-Driven Dashboard: Air Discharge Consents in Auckland")
+
+
 
 st.markdown(f"""
 <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #ff4b4b; padding: 10px 18px; border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
