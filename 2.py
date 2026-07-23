@@ -63,6 +63,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🇳🇿 AI-Driven Dashboard: Air Discharge Consents in Auckland")
+
+# --- DYNAMIC TIME, DATE & LOCATION BANNER ---
+now = datetime.now()
+formatted_date = now.strftime("%A, %B %d, %Y")
+formatted_time = now.strftime("%I:%M %p")
+
+st.markdown(f"""
+<div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #ff4b4b; padding: 10px 18px; border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+    <div>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📍 Location:</span> 
+        <span style="font-size: 15px; color: #495057;">Auckland, Region 1010, New Zealand 🇳🇿</span>
+    </div>
+    <div>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📅 Date:</span> 
+        <span style="font-size: 15px; color: #495057; margin-right: 15px;">{formatted_date}</span>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">⏰ Local Time:</span> 
+        <span style="font-size: 15px; color: #ff4b4b; font-weight: bold;">{formatted_time} NZST</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 *This dashboard analyzes industrial air discharge consents data extracted via LLM/NLP pipelines to support compliance monitoring and regulatory insights.*
 """)
@@ -337,7 +358,7 @@ else:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 7. ENHANCED VISUALIZATION TABS (With New Explore Data Analytics Tab 4)
+# 7. ENHANCED VISUALIZATION TABS
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
     "📋  TAB 1: Rule Rankings & Compliance Risks", 
@@ -402,7 +423,6 @@ with tab3:
         fig_dist.update_layout(xaxis=dict(tickmode='linear', tick0=1, dtick=1))
         st.plotly_chart(fig_dist, use_container_width=True)
 
-# --- NEW TAB 4: EXPLORE DATA ANALYTICS & COMPLIANCE INTELLIGENCE ---
 with tab4:
     with st.container(border=True):
         st.header("📊 High-Level Compliance Analytics & Mitigation Intelligence")
@@ -447,7 +467,6 @@ with tab4:
         st.markdown("---")
         st.subheader("3. Comprehensive Industry Compliance Cross-Tabulation")
         
-        # Interactive pivot table breakdown
         summary_table = filtered_df.groupby(["Industry_Type", "Activity_Type"]).agg(
             Total_Consents=("Consent_ID", "count"),
             Total_Infringements=("Infringement_Count", "sum"),
