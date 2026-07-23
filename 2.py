@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import requests
 from datetime import datetime, timedelta
 
 # Optional import for PDF text extraction (run: pip install pypdf)
@@ -27,31 +28,46 @@ st.markdown("""
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 2. DATA PROCESSING PIPELINE (With Dates & Expiration Status)
+# 2. HELPER FUNCTIONS & API INTEGRATION (Weather & Air Quality)
 # -----------------------------------------------------------------------------
+@st.cache_data(ttl=600)  # Cache for 10 minutes to prevent API spamming
+def fetch_auckland_environmental_data():
+    """Fetches live weather and air quality for Auckland (-36.8485, 174.7633)."""
+    lat, lon = -36.8485, 174.7633
+    try:
+        # Open-Meteo Weather API
+        w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m"
+        w_res = requests.get(w_url, timeout=5).json()
+        
+        # Open-Meteo Air Quality API
+        aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=european_aqi"
+        aq_res = requests.get(aq_url, timeout=5).json()
+
+        return {
+            "temp": w_res["current"]["temperature_2m"],
+            "humidity": w_res["current"]["relative_humidity_2m"],
+            "wind": w_res["current"]["wind_speed_10m"],
+            "aqi": aq_res["current"]["european_aqi"]
+        }
+    except Exception:
+        return None  # Fallback if API call fails or offline
+
 def generate_dates_and_status(duration_years, is_expired_bias=False):
     """Generates realistic issued/expiry dates with explicit integer casting."""
     today = datetime.now()
-    
-    # Ensure the duration is a standard Python int
     dur = int(duration_years)
     
     if is_expired_bias:
-        # Simulate an older consent that has already expired
         days_ago = int(np.random.randint((dur * 365) + 1, (dur * 365) + 3000))
     else:
-        # Simulate a currently active consent
         days_ago = int(np.random.randint(1, dur * 365))
         
-    # Cast calculation to int() to satisfy timedelta requirements
     date_issued = today - timedelta(days=int(days_ago)) 
     expiry_date = date_issued + timedelta(days=int(dur * 365)) 
     
-    # Determine status based on today's date
     status = "🔴 Expired" if expiry_date < today else "🟢 Valid"
-    
     return date_issued.strftime("%Y-%m-%d"), expiry_date.strftime("%Y-%m-%d"), status
-    
+
 def parse_uploaded_file(uploaded_file):
     """Reads an uploaded PDF or TXT file and extracts/simulates structured data."""
     file_name = uploaded_file.name
@@ -74,7 +90,6 @@ def parse_uploaded_file(uploaded_file):
     mitigation_measures = ["Bag filters / Fabric dust collectors", "Wet scrubbers", "Biofilters", "Activated carbon adsorption", "Thermal oxidizers", "Cyclone separators"]
 
     duration = int(np.random.randint(1, 31))
-    # Randomly make ~25% of uploaded files expired for demonstration purposes
     is_expired = np.random.choice([True, False], p=[0.25, 0.75])
     date_issued, expiry_date, status = generate_dates_and_status(duration, is_expired)
 
@@ -105,12 +120,9 @@ def load_default_mock_data():
     mitigation_measures = ["Bag filters / Fabric dust collectors", "Wet scrubbers", "Biofilters", "Activated carbon adsorption", "Thermal oxidizers", "Cyclone separators"]
 
     durations = np.random.randint(1, 31, n_records)
-    dates_issued = []
-    expiry_dates = []
-    statuses = []
+    dates_issued, expiry_dates, statuses = [], [], []
     
     for dur in durations:
-        # Make roughly 30% of baseline consents expired
         is_exp = np.random.choice([True, False], p=[0.30, 0.70])
         d_iss, d_exp, stat = generate_dates_and_status(dur, is_exp)
         dates_issued.append(d_iss)
@@ -135,7 +147,7 @@ def load_default_mock_data():
     return pd.DataFrame(data)
 
 # -----------------------------------------------------------------------------
-# 3. SIDEBAR CONTROLS (Upload & Filters)
+# 3. SIDEBAR CONTROLS
 # -----------------------------------------------------------------------------
 st.sidebar.header("📁 1. Upload Consents")
 uploaded_files = st.sidebar.file_uploader(
@@ -162,11 +174,9 @@ selected_industry = st.sidebar.selectbox("Select Industrial Activity Type:", opt
 unique_activities = ["All"] + sorted(list(df["Activity_Type"].unique()))
 selected_activity = st.sidebar.selectbox("Select Activity Risk Category:", options=unique_activities)
 
-# New Drop-Down Filter for Consent Status
 unique_statuses = ["All", "🟢 Valid", "🔴 Expired"]
 selected_status = st.sidebar.selectbox("Select Consent Status:", options=unique_statuses)
 
-# Apply Sidebar Filters
 filtered_df = df.copy()
 if selected_industry != "All":
     filtered_df = filtered_df[filtered_df["Industry_Type"] == selected_industry]
@@ -176,7 +186,7 @@ if selected_status != "All":
     filtered_df = filtered_df[filtered_df["Status"] == selected_status]
 
 # -----------------------------------------------------------------------------
-# 4. GLOBAL SEARCH BOX
+# 4. GLOBAL SEARCH & LIVE WEATHER MONITORING BAR
 # -----------------------------------------------------------------------------
 st.markdown("### 🔍 Global Information Search")
 search_query = st.text_input(
@@ -192,6 +202,22 @@ if search_query:
     ]).any(axis=1)
     filtered_df = filtered_df[search_mask]
 
+# --- NEW: Live Environmental & Meteorological Widget ---
+env_data = fetch_auckland_environmental_data()
+if env_data:
+    st.markdown("#### 🌤️ Live Auckland Ambient Conditions")
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    
+    m_col1.metric("Temperature", f"{env_data['temp']} °C", delta="Live API", border=True)
+    m_col2.metric("Wind Speed", f"{env_data['wind']} km/h", border=True)
+    m_col3.metric("Relative Humidity", f"{env_data['humidity']}%", border=True)
+    
+    # Simple AQI status mapping
+    aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
+    m_col4.metric("Air Quality Index", f"{aqi_text}", border=True)
+
+st.markdown("---")
+
 # -----------------------------------------------------------------------------
 # 5. LIVE GEOGRAPHIC MAP
 # -----------------------------------------------------------------------------
@@ -204,7 +230,7 @@ if not filtered_df.empty:
         lon="Longitude",
         hover_name="Consent_ID",
         hover_data=["Status", "Industry_Type", "AUP_E14_Rule", "Expiry_Date", "Infringement_Count"],
-        color="Status", # Color points on the map by Valid vs Expired!
+        color="Status",
         color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
         size=filtered_df["Infringement_Count"] + 2,
         zoom=10,
@@ -223,17 +249,17 @@ st.markdown("---")
 if not filtered_df.empty:
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric("Total Consents Found", len(filtered_df))
+        st.metric("Total Consents Found", len(filtered_df), border=True)
     with col2:
         valid_count = len(filtered_df[filtered_df["Status"] == "🟢 Valid"])
-        st.metric("Active / Valid Consents", valid_count)
+        st.metric("Active / Valid Consents", valid_count, border=True)
     with col3:
         expired_count = len(filtered_df[filtered_df["Status"] == "🔴 Expired"])
-        st.metric("Expired Consents", expired_count)
+        st.metric("Expired Consents", expired_count, border=True)
     with col4:
-        st.metric("Total Infringements", filtered_df["Infringement_Count"].sum())
+        st.metric("Total Infringements", filtered_df["Infringement_Count"].sum(), border=True)
     with col5:
-        st.metric("Avg. Duration", f"{filtered_df['Consent_Duration_Years'].mean():.1f} Yrs")
+        st.metric("Avg. Duration", f"{filtered_df['Consent_Duration_Years'].mean():.1f} Yrs", border=True)
     st.markdown("---")
 else:
     st.error("⚠️ No entries match your active drop-downs or text search keywords.")
@@ -291,20 +317,19 @@ with tab3:
     fig_dist = px.histogram(
         filtered_df, x="Consent_Duration_Years", nbins=30,
         labels={"Consent_Duration_Years": "Consent Duration (Years)"},
-        color="Status", barmode="stack", # Stacked by Valid vs Expired
+        color="Status", barmode="stack",
         color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"}
     )
     fig_dist.update_layout(xaxis=dict(tickmode='linear', tick0=1, dtick=1))
     st.plotly_chart(fig_dist, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 8. EXTRACTED DATA EXPLORER (With Status Styling)
+# 8. EXTRACTED DATA EXPLORER
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("🔍 Extracted Data & Document Source Logs")
 st.markdown("Review data items currently matching the filter and search parameters:")
 
-# Organize display columns neatly
 display_cols = [
     "Consent_ID", "Status", "Date_Issued", "Expiry_Date", 
     "Consent_Duration_Years", "Industry_Type", "AUP_E14_Rule", 
@@ -312,7 +337,6 @@ display_cols = [
 ]
 table_df = filtered_df[display_cols]
 
-# Render interactive dataframe with Pandas styling
 def style_status(val):
     if "Valid" in str(val):
         return "background-color: rgba(44, 160, 44, 0.2); color: #2ca02c; font-weight: bold;"
