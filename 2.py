@@ -36,9 +36,9 @@ st.markdown("""
 
     /* Style each individual Tab button */
     button[data-baseweb="tab"] {
-        font-size: 18px !important;
+        font-size: 17px !important;
         font-weight: 700 !important;
-        padding: 12px 24px !important;
+        padding: 12px 20px !important;
         border-radius: 8px !important;
         border: 1px solid #d3d3d3 !important;
         background-color: #ffffff !important;
@@ -76,11 +76,9 @@ def fetch_auckland_environmental_data():
     """Fetches live weather and air quality for Auckland (-36.8485, 174.7633)."""
     lat, lon = -36.8485, 174.7633
     try:
-        # Open-Meteo Weather API
         w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m"
         w_res = requests.get(w_url, timeout=5).json()
         
-        # Open-Meteo Air Quality API
         aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=european_aqi"
         aq_res = requests.get(aq_url, timeout=5).json()
 
@@ -91,7 +89,7 @@ def fetch_auckland_environmental_data():
             "aqi": aq_res["current"]["european_aqi"]
         }
     except Exception:
-        return None  # Fallback if API call fails or offline
+        return None
 
 def generate_dates_and_status(duration_years, is_expired_bias=False):
     """Generates realistic issued/expiry dates with explicit integer casting."""
@@ -245,6 +243,7 @@ with st.sidebar.popover("❓ How to Use This Dashboard"):
        * **Tab 1 (Rules & Risk):** Check high-risk AUP E14 rule infringements.
        * **Tab 2 (Discharges & Mitigations):** Analyze industry distributions and active air scrubbing controls.
        * **Tab 3 (Duration & Patterns):** Review consent timeline distributions.
+       * **Tab 4 (Explore Data Analytics):** High-level compliance matrices, infringement heatmaps, and mitigation efficiency cross-analysis.
 
     6. **Inspect & Export Raw Data:**
        * Scroll to the bottom table to view styled records (🟢 Valid vs 🔴 Expired).
@@ -338,12 +337,13 @@ else:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 7. ENHANCED VISUALIZATION TABS (Large & Bordered)
+# 7. ENHANCED VISUALIZATION TABS (With New Explore Data Analytics Tab 4)
 # -----------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📋  TAB 1: Rule Rankings & Compliance Risks", 
     "🏭  TAB 2: Discharges & Mitigation Profiles", 
-    "⏳  TAB 3: Consent Duration & Regulatory Patterns"
+    "⏳  TAB 3: Consent Duration & Regulatory Patterns",
+    "📊  TAB 4: Explore Data Analytics & Compliance Intelligence"
 ])
 
 with tab1:
@@ -401,6 +401,61 @@ with tab3:
         )
         fig_dist.update_layout(xaxis=dict(tickmode='linear', tick0=1, dtick=1))
         st.plotly_chart(fig_dist, use_container_width=True)
+
+# --- NEW TAB 4: EXPLORE DATA ANALYTICS & COMPLIANCE INTELLIGENCE ---
+with tab4:
+    with st.container(border=True):
+        st.header("📊 High-Level Compliance Analytics & Mitigation Intelligence")
+        st.markdown("Advanced cross-dimensional analysis for regulatory auditing and compliance enforcement.")
+        
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            st.subheader("1. Infringements vs. Mitigation Measure Efficiency")
+            mit_inf_df = filtered_df.groupby("Mitigation_Measure")["Infringement_Count"].mean().reset_index()
+            mit_inf_df.columns = ["Mitigation_Measure", "Avg_Infringements"]
+            
+            fig_mit_eff = px.bar(
+                mit_inf_df, 
+                x="Mitigation_Measure", 
+                y="Avg_Infringements",
+                color="Avg_Infringements",
+                color_continuous_scale="Oranges",
+                labels={"Avg_Infringements": "Avg Infringements / Site", "Mitigation_Measure": "Mitigation Tech"}
+            )
+            fig_mit_eff.update_layout(xaxis_tickangle=-30)
+            st.plotly_chart(fig_mit_eff, use_container_width=True)
+
+        with col_b:
+            st.subheader("2. Compliance Risk Profile Matrix (Industry vs Activity Risk)")
+            pivot_df = filtered_df.pivot_table(
+                index="Industry_Type", 
+                columns="Activity_Type", 
+                values="Infringement_Count", 
+                aggfunc="sum", 
+                fill_value=0
+            )
+            fig_piv = px.imshow(
+                pivot_df, 
+                text_auto=True, 
+                color_continuous_scale="Reds",
+                aspect="auto",
+                labels=dict(x="Risk Category", y="Industry Type", color="Total Infringements")
+            )
+            st.plotly_chart(fig_piv, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("3. Comprehensive Industry Compliance Cross-Tabulation")
+        
+        # Interactive pivot table breakdown
+        summary_table = filtered_df.groupby(["Industry_Type", "Activity_Type"]).agg(
+            Total_Consents=("Consent_ID", "count"),
+            Total_Infringements=("Infringement_Count", "sum"),
+            Avg_Duration_Yrs=("Consent_Duration_Years", "mean")
+        ).reset_index()
+        
+        summary_table["Avg_Duration_Yrs"] = summary_table["Avg_Duration_Yrs"].round(1)
+        st.dataframe(summary_table, use_container_width=True)
 
 # -----------------------------------------------------------------------------
 # 8. EXTRACTED DATA EXPLORER
