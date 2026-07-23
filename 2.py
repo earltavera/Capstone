@@ -346,3 +346,16 @@ def style_status(val):
 
 styled_table = table_df.style.map(style_status, subset=["Status"])
 st.dataframe(styled_table, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# 9. FOOTER
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.markdown(
+    """
+    <div style="text-align: center; color: #888888; font-size: 14px; padding: 10px;">
+        Developed by <strong>Earl Tavera 2026</strong> | AI-Driven Air Discharge Consents Dashboard
+    </div>
+    """,
+    unsafe_allow_html=True
+)
