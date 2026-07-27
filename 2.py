@@ -210,11 +210,24 @@ def load_default_mock_data():
 # 3. SIDEBAR CONTROLS & HELP LINK
 # -----------------------------------------------------------------------------
 st.sidebar.header("📁 1. Upload Consents")
+
+# Initialize session state for file uploader key if not present
+if "file_uploader_key" not in st.session_state:
+    st.session_state["file_uploader_key"] = 0
+
+# File uploader using dynamic key from session_state
 uploaded_files = st.sidebar.file_uploader(
     "Upload PDF or TXT Consent Files",
     type=["pdf", "txt"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key=f"uploader_{st.session_state['file_uploader_key']}"
 )
+
+# Clear button below file uploader
+if uploaded_files:
+    if st.sidebar.button("🗑️ Clear Uploaded Files", help="Reset uploader and return to default view", use_container_width=True):
+        st.session_state["file_uploader_key"] += 1
+        st.rerun()
 
 if uploaded_files:
     with st.spinner(f"Extracting NLP metadata from {len(uploaded_files)} files..."):
@@ -223,7 +236,7 @@ if uploaded_files:
     st.sidebar.success(f"Successfully processed {len(uploaded_files)} documents!")
 else:
     df = load_default_mock_data()
-    st.sidebar.info("💡 Showing baseline dataset. Drop presentation files above to parse.")
+    st.sidebar.info("💡 Showing baseline dataset. Drop files above to parse.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 2. Drop-Down Filters")
@@ -248,6 +261,7 @@ with st.sidebar.popover("❓ How to Use This Dashboard"):
     1. **Upload Documents (Optional):**
        * Drop your PDF or TXT consent files into the **Upload Consents** box in the sidebar.
        * The NLP pipeline will extract key data fields automatically.
+       * Click **Clear Uploaded Files** to remove current files and start fresh.
        * *Default:* If no file is uploaded, standard Auckland baseline data is displayed.
 
     2. **Filter Your View:**
