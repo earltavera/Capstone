@@ -62,7 +62,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🇳🇿 AI-Driven Dashboard: Air Discharge Consents in Auckland")
+st.title("🇳🇿 AI-Driven Dashboard for Analysing Air Discharge Consents in Auckland")
 
 # --- DYNAMIC TIME, DATE & LOCATION BANNER ---
 now = datetime.now()
