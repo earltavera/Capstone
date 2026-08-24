@@ -581,7 +581,7 @@ html_code = f"""
 
         async function loadModel() {{
             // This loads a fast, lightweight Llama 3 model
-            await engine.reload("Llama-3.1-8B-Instruct-q4f32_1-MLC");
+            await engine.reload("Phi-3-mini-4k-instruct-q4f16_1-MLC");
             statusDiv.innerText = "AI is ready! Ask a question.";
             userInput.disabled = false;
             sendBtn.disabled = false;
