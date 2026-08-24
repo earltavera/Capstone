@@ -528,95 +528,61 @@ st.markdown(
     unsafe_allow_html=True
 )
 # -----------------------------------------------------------------------------
-# 10. LOCAL DASHBOARD CHATBOT (WebLLM - In Browser)
+# 10. LOCAL DASHBOARD CHATBOT (Ollama - No API Key Needed)
 # -----------------------------------------------------------------------------
-import streamlit.components.v1 as components
-import json
-
 st.markdown("---")
-st.subheader("💬 Ask the Dashboard (Browser AI)")
-st.markdown("This chatbot runs entirely in your web browser. No API keys needed.")
+st.subheader("💬 Ask the Dashboard Assistant")
+st.markdown("Have a question about the records currently displayed on your screen? Ask below:")
 
-# Convert your filtered data to a safe text format for JavaScript
-data_context = filtered_df.to_string(index=False)
-safe_data = json.dumps(data_context)
+# Initialize chat history in session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# We create a custom HTML window to run the WebLLM JavaScript
-html_code = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: sans-serif; color: #333; }}
-        #chat-box {{ height: 250px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; border-radius: 5px; }}
-        .msg {{ margin-bottom: 10px; padding: 8px; border-radius: 5px; }}
-        .user {{ background-color: #e6f2ff; text-align: right; }}
-        .ai {{ background-color: #f0f0f0; }}
-        #status {{ font-size: 0.9em; color: #666; margin-bottom: 5px; }}
-        input, button {{ padding: 8px; }}
-    </style>
-</head>
-<body>
-    <div id="status">Loading AI engine... (This takes a few minutes the first time)</div>
-    <div id="chat-box"></div>
-    <input type="text" id="user-input" placeholder="Ask about the data..." style="width: 70%;" disabled>
-    <button id="send-btn" disabled>Ask</button>
+# Display previous chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-    <script type="module">
-        import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+# User text input
+if user_prompt := st.chat_input("Ask something about this filtered data..."):
+    # Add user message to state and display it
+    st.session_state.messages.append({"role": "user", "content": user_prompt})
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
 
-        const chatBox = document.getElementById("chat-box");
-        const userInput = document.getElementById("user-input");
-        const sendBtn = document.getElementById("send-btn");
-        const statusDiv = document.getElementById("status");
-
-        // The dashboard data is passed straight from Python to JavaScript here
-        const dashboardData = {safe_data};
-
-        // Set up the AI engine
-        const engine = new webllm.MLCEngine();
-        engine.setInitProgressCallback((report) => {{
-            statusDiv.innerText = report.text;
-        }});
-
-        async function loadModel() {{
-            // This loads a fast, lightweight Llama 3 model
-            await engine.reload("Phi-3-mini-4k-instruct-q4f16_1-MLC");
-            statusDiv.innerText = "AI is ready! Ask a question.";
-            userInput.disabled = false;
-            sendBtn.disabled = false;
-        }}
-
-        loadModel();
-
-        // What happens when the user clicks Ask
-        sendBtn.onclick = async () => {{
-            const text = userInput.value;
-            if (!text) return;
-            
-            chatBox.innerHTML += `<div class="msg user"><b>You:</b> ${{text}}</div>`;
-            userInput.value = "";
-            statusDiv.innerText = "Thinking...";
-
-            // Bundle the temporary data with the user's question
-            const prompt = `You are a data assistant. Use ONLY this data: \\n${{dashboardData}}\\n\\nQuestion: ${{text}}`;
-            
-            const messages = [
-                {{ role: "system", content: "Answer the question short and clearly, using only the provided data." }},
-                {{ role: "user", content: prompt }}
-            ];
-
-            // Get the answer from the browser AI
-            const reply = await engine.chat.completions.create({{ messages }});
-            
-            chatBox.innerHTML += `<div class="msg ai"><b>AI:</b> ${{reply.choices[0].message.content}}</div>`;
-            statusDiv.innerText = "AI is ready! Ask another question.";
-            chatBox.scrollTop = chatBox.scrollHeight;
-        }};
-    </script>
-</body>
-</html>
-"""
-
-# Display the HTML block inside Streamlit
-components.html(html_code, height=450, scrolling=True)
+    # Generate response using local Ollama
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                import ollama
+                
+                # Convert the currently filtered dataframe to text format
+                data_context = filtered_df.to_string(index=False)
+                
+                system_prompt = f"""
+                You are a helpful assistant for an air discharge consents dashboard.
+                Answer the user's question using ONLY the temporary data currently visible on the dashboard below:
+                
+                {data_context}
+                
+                If the answer cannot be found in this data, say you cannot find it in the current view. Keep answers clear and direct.
+                """
+                
+                # Call local Ollama model (Make sure Ollama is running and you pulled llama3 or phi3)
+                response = ollama.chat(
+                    model='llama3',
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': user_prompt}
+                    ]
+                )
+                
+                assistant_reply = response['message']['content']
+                st.markdown(assistant_reply)
+                
+                # Save assistant response to state
+                st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
+                
+            except Exception as e:
+                error_msg = f"Could not connect to local Ollama. Make sure Ollama is running on your computer. Error: {e}"
+                st.error(error_msg)
