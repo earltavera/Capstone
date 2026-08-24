@@ -63,6 +63,33 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.title("🇳🇿 AI-Driven Dashboard for Analysing Air Discharge Consents in Auckland")
+
+# --- DYNAMIC TIME, DATE & LOCATION BANNER ---
+now = datetime.now()
+formatted_date = now.strftime("%A, %B %d, %Y")
+formatted_time = now.strftime("%I:%M %p")
+
+st.markdown(f"""
+<div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #ff4b4b; padding: 10px 18px; border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+    <div>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📍 Location:</span> 
+        <span style="font-size: 15px; color: #495057;">Auckland, Region 1010, New Zealand 🇳🇿</span>
+    </div>
+    <div>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📅 Date:</span> 
+        <span style="font-size: 15px; color: #495057; margin-right: 15px;">{formatted_date}</span>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">⏰ Local Time:</span> 
+        <span style="font-size: 15px; color: #ff4b4b; font-weight: bold;">{formatted_time} NZST</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+*This dashboard analyzes industrial air discharge consents data extracted via LLM/NLP pipelines to support compliance monitoring and regulatory insights.*
+""")
+st.markdown("---")
+
 # -----------------------------------------------------------------------------
 # 2. HELPER FUNCTIONS & API INTEGRATION (Weather & Air Quality)
 # -----------------------------------------------------------------------------
@@ -181,51 +208,7 @@ def load_default_mock_data():
     return pd.DataFrame(data)
 
 # -----------------------------------------------------------------------------
-# 3. DASHBOARD TITLE & LIVE CONDITIONS
-# -----------------------------------------------------------------------------
-st.title("🇳🇿 AI-Driven Dashboard for Analysing Air Discharge Consents in Auckland")
-
-# --- DYNAMIC TIME, DATE & LOCATION BANNER ---
-now = datetime.now()
-formatted_date = now.strftime("%A, %B %d, %Y")
-formatted_time = now.strftime("%I:%M %p")
-
-st.markdown(f"""
-<div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #ff4b4b; padding: 10px 18px; border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-    <div>
-        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📍 Location:</span> 
-        <span style="font-size: 15px; color: #495057;">Auckland, Region 1010, New Zealand 🇳🇿</span>
-    </div>
-    <div>
-        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📅 Date:</span> 
-        <span style="font-size: 15px; color: #495057; margin-right: 15px;">{formatted_date}</span>
-        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">⏰ Local Time:</span> 
-        <span style="font-size: 15px; color: #ff4b4b; font-weight: bold;">{formatted_time} NZST</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-# --- Live Environmental & Meteorological Widget ---
-env_data = fetch_auckland_environmental_data()
-if env_data:
-    st.markdown("#### 🌤️ Live Auckland Ambient Conditions")
-    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-    
-    m_col1.metric("Temperature", f"{env_data['temp']} °C", delta="Live API", border=True)
-    m_col2.metric("Wind Speed", f"{env_data['wind']} km/h", border=True)
-    m_col3.metric("Relative Humidity", f"{env_data['humidity']}%", border=True)
-    
-    aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
-    m_col4.metric("Air Quality Index", f"{aqi_text}", border=True)
-
-st.markdown("---")
-st.markdown("""
-*This dashboard analyzes industrial air discharge consents data extracted via LLM/NLP pipelines to support compliance monitoring and regulatory insights.*
-""")
-st.markdown("---")
-
-# -----------------------------------------------------------------------------
-# 4. SIDEBAR CONTROLS & HELP LINK
+# 3. SIDEBAR CONTROLS & HELP LINK
 # -----------------------------------------------------------------------------
 st.sidebar.header("📁 1. Upload Consents")
 
@@ -311,12 +294,12 @@ if selected_status != "All":
     filtered_df = filtered_df[filtered_df["Status"] == selected_status]
 
 # -----------------------------------------------------------------------------
-# 5. MAP PLACEHOLDER (Reserves space for the map above the search bar)
+# 4. MAP PLACEHOLDER (Reserves space for the map above the search bar)
 # -----------------------------------------------------------------------------
 map_container = st.container()
 
 # -----------------------------------------------------------------------------
-# 6. GLOBAL SEARCH BAR
+# 5. GLOBAL SEARCH & LIVE WEATHER MONITORING BAR
 # -----------------------------------------------------------------------------
 st.markdown("### 🔍 Global Information Search")
 search_query = st.text_input(
@@ -332,8 +315,23 @@ if search_query:
     ]).any(axis=1)
     filtered_df = filtered_df[search_mask]
 
+# --- Live Environmental & Meteorological Widget ---
+env_data = fetch_auckland_environmental_data()
+if env_data:
+    st.markdown("#### 🌤️ Live Auckland Ambient Conditions")
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    
+    m_col1.metric("Temperature", f"{env_data['temp']} °C", delta="Live API", border=True)
+    m_col2.metric("Wind Speed", f"{env_data['wind']} km/h", border=True)
+    m_col3.metric("Relative Humidity", f"{env_data['humidity']}%", border=True)
+    
+    aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
+    m_col4.metric("Air Quality Index", f"{aqi_text}", border=True)
+
+st.markdown("---")
+
 # -----------------------------------------------------------------------------
-# 7. RENDER THE MAP (Fills the placeholder we created above)
+# 5.5. RENDER THE MAP (Fills the placeholder we created above)
 # -----------------------------------------------------------------------------
 with map_container:
     st.subheader("📍 Live Map: Air Discharge Consent Locations")
@@ -359,7 +357,7 @@ with map_container:
     st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 8. KPI METRICS OVERVIEW
+# 6. KPI METRICS OVERVIEW
 # -----------------------------------------------------------------------------
 if not filtered_df.empty:
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -381,7 +379,7 @@ else:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 9. ENHANCED VISUALIZATION TABS
+# 7. ENHANCED VISUALIZATION TABS
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
     "📋  TAB 1: Rule Rankings & Compliance Risks", 
@@ -500,7 +498,7 @@ with tab4:
         st.dataframe(summary_table, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 10. EXTRACTED DATA EXPLORER
+# 8. EXTRACTED DATA EXPLORER
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("🔍 Extracted Data & Document Source Logs")
@@ -524,7 +522,7 @@ styled_table = table_df.style.map(style_status, subset=["Status"])
 st.dataframe(styled_table, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 11. FOOTER
+# 9. FOOTER
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.markdown(
@@ -536,7 +534,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 # -----------------------------------------------------------------------------
-# 12. LOCAL DASHBOARD CHATBOT (Ollama - No API Key Needed)
+# 10. LOCAL DASHBOARD CHATBOT (Ollama - No API Key Needed)
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("💬 Ask the Dashboard Assistant")
