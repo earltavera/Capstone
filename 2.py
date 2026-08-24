@@ -294,7 +294,12 @@ if selected_status != "All":
     filtered_df = filtered_df[filtered_df["Status"] == selected_status]
 
 # -----------------------------------------------------------------------------
-# 4. GLOBAL SEARCH & LIVE WEATHER MONITORING BAR
+# 4. MAP PLACEHOLDER (Reserves space for the map above the search bar)
+# -----------------------------------------------------------------------------
+map_container = st.container()
+
+# -----------------------------------------------------------------------------
+# 5. GLOBAL SEARCH & LIVE WEATHER MONITORING BAR
 # -----------------------------------------------------------------------------
 st.markdown("### 🔍 Global Information Search")
 search_query = st.text_input(
@@ -326,29 +331,30 @@ if env_data:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 5. LIVE GEOGRAPHIC MAP
+# 5.5. RENDER THE MAP (Fills the placeholder we created above)
 # -----------------------------------------------------------------------------
-st.subheader("📍 Live Map: Air Discharge Consent Locations")
+with map_container:
+    st.subheader("📍 Live Map: Air Discharge Consent Locations")
 
-if not filtered_df.empty:
-    fig_map = px.scatter_mapbox(
-        filtered_df,
-        lat="Latitude",
-        lon="Longitude",
-        hover_name="Consent_ID",
-        hover_data=["Status", "Industry_Type", "AUP_E14_Rule", "Expiry_Date", "Infringement_Count"],
-        color="Status",
-        color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
-        size=filtered_df["Infringement_Count"] + 2,
-        zoom=10,
-        height=450
-    )
-    fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
-    st.plotly_chart(fig_map, use_container_width=True)
-else:
-    st.warning("No records match your search criteria to map.")
-
-st.markdown("---")
+    if not filtered_df.empty:
+        fig_map = px.scatter_mapbox(
+            filtered_df,
+            lat="Latitude",
+            lon="Longitude",
+            hover_name="Consent_ID",
+            hover_data=["Status", "Industry_Type", "AUP_E14_Rule", "Expiry_Date", "Infringement_Count"],
+            color="Status",
+            color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
+            size=filtered_df["Infringement_Count"] + 2,
+            zoom=10,
+            height=450
+        )
+        fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
+        st.plotly_chart(fig_map, use_container_width=True)
+    else:
+        st.warning("No records match your search criteria to map.")
+        
+    st.markdown("---")
 
 # -----------------------------------------------------------------------------
 # 6. KPI METRICS OVERVIEW
