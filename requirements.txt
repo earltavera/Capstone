@@ -22,3 +22,11 @@ pytesseract
 python-dateutil
 pdfplumber
 tabulate
+
+streamlit
+pandas
+numpy
+plotly
+requests
+pypdf
+ollama
