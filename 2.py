@@ -110,9 +110,10 @@ def fetch_auckland_environmental_data():
             "wind": w_res["current"]["wind_speed_10m"],
             "aqi": aq_res["current"]["european_aqi"]
         }
-    except Exception:
+    except Exception as e:
+        st.error(f"Weather API failed to load: {e}")
         return None
-
+        
 def generate_dates_and_status(duration_years, is_expired_bias=False):
     """Generates realistic issued/expiry dates with explicit integer casting."""
     today = datetime.now()
