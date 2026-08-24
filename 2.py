@@ -4,6 +4,7 @@ import numpy as np
 import plotly.express as px
 import requests
 from datetime import datetime, timedelta
+import ollama
 
 # Optional import for PDF text extraction (run: pip install pypdf)
 try:
@@ -526,3 +527,62 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+# -----------------------------------------------------------------------------
+# 10. LOCAL DASHBOARD CHATBOT (Ollama - No API Key Needed)
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("💬 Ask the Dashboard Assistant")
+st.markdown("Have a question about the records currently displayed on your screen? Ask below:")
+
+# Initialize chat history in session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display previous chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# User text input
+if user_prompt := st.chat_input("Ask something about this filtered data..."):
+    # Add user message to state and display it
+    st.session_state.messages.append({"role": "user", "content": user_prompt})
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
+
+    # Generate response using local Ollama
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                import ollama
+                
+                # Convert the currently filtered dataframe to text format
+                data_context = filtered_df.to_string(index=False)
+                
+                system_prompt = f"""
+                You are a helpful assistant for an air discharge consents dashboard.
+                Answer the user's question using ONLY the temporary data currently visible on the dashboard below:
+                
+                {data_context}
+                
+                If the answer cannot be found in this data, say you cannot find it in the current view. Keep answers clear and direct.
+                """
+                
+                # Call local Ollama model (Make sure Ollama is running and you pulled llama3 or phi3)
+                response = ollama.chat(
+                    model='llama3',
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': user_prompt}
+                    ]
+                )
+                
+                assistant_reply = response['message']['content']
+                st.markdown(assistant_reply)
+                
+                # Save assistant response to state
+                st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
+                
+            except Exception as e:
+                error_msg = f"Could not connect to local Ollama. Make sure Ollama is running on your computer. Error: {e}"
+                st.error(error_msg)
