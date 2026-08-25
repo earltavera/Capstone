@@ -66,16 +66,15 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 # 2. HELPER FUNCTIONS & API INTEGRATION (Weather & Air Quality)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=600)  # Cache for 10 minutes to prevent API spamming
+@st.cache_data(ttl=600) 
 def fetch_auckland_environmental_data():
-    """Fetches live weather and air quality for Auckland (-36.8485, 174.7633)."""
     lat, lon = -36.8485, 174.7633
     try:
         w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m"
-        w_res = requests.get(w_url, timeout=5).json()
+        w_res = requests.get(w_url, timeout=15).json()
         
         aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=european_aqi"
-        aq_res = requests.get(aq_url, timeout=5).json()
+        aq_res = requests.get(aq_url, timeout=15).json()
 
         return {
             "temp": w_res["current"]["temperature_2m"],
@@ -83,7 +82,8 @@ def fetch_auckland_environmental_data():
             "wind": w_res["current"]["wind_speed_10m"],
             "aqi": aq_res["current"]["european_aqi"]
         }
-    except Exception:
+    except Exception as e:
+        st.error(f"Weather error: {e}")
         return None
 
 def generate_dates_and_status(duration_years, is_expired_bias=False):
