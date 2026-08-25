@@ -4,7 +4,10 @@ import numpy as np
 import plotly.express as px
 import requests
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import ollama
+
+
 
 # Optional import for PDF text extraction (run: pip install pypdf)
 try:
@@ -186,7 +189,9 @@ def load_default_mock_data():
 st.title("🇳🇿 AI-Driven Dashboard for Analysing Air Discharge Consents in Auckland")
 
 # --- DYNAMIC TIME, DATE & LOCATION BANNER ---
-now = datetime.now()
+nz_timezone = ZoneInfo("Pacific/Auckland")
+now = datetime.now(nz_timezone)
+
 formatted_date = now.strftime("%A, %B %d, %Y")
 formatted_time = now.strftime("%I:%M %p")
 
