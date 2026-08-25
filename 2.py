@@ -6,7 +6,7 @@ import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import ollama
-import json # NEW IMPORT ADDED
+
 
 # Optional import for PDF text extraction (run: pip install pypdf)
 try:
@@ -104,75 +104,46 @@ def generate_dates_and_status(duration_years, is_expired_bias=False):
     status = "🔴 Expired" if expiry_date < today else "🟢 Valid"
     return date_issued.strftime("%Y-%m-%d"), expiry_date.strftime("%Y-%m-%d"), status
 
-# --- NEW REAL AI EXTRACTION FUNCTION ---
 def parse_uploaded_file(uploaded_file):
-    """Reads a PDF/TXT file and uses a local LLM to extract real structured data."""
+    """Reads an uploaded PDF or TXT file and extracts/simulates structured data."""
     file_name = uploaded_file.name
     raw_text = ""
     
-    # 1. Read the text from the file
     if file_name.endswith(".pdf") and PYPDF_AVAILABLE:
         try:
             reader = PdfReader(uploaded_file)
             raw_text = " ".join([page.extract_text() or "" for page in reader.pages])
         except Exception as e:
             st.error(f"Error reading {file_name}: {e}")
-            return None
     elif file_name.endswith(".txt"):
         raw_text = str(uploaded_file.read(), "utf-8", errors="ignore")
 
-    # 2. Ask Ollama to extract the data as JSON
-    prompt = f"""
-    Read the following air discharge consent document and extract the key information into JSON format. 
+    np.random.seed(abs(hash(file_name)) % (10 ** 8))
     
-    Required keys:
-    - "Company_Name" (string, name of the business)
-    - "Consent_ID" (string, the reference number)
-    - "Industry_Type" (string, e.g., Wood Processing, Chemical Manufacturing)
-    - "AUP_E14_Rule" (string, the specific rule mentioned)
-    - "Activity_Type" (string, choose: Controlled, Restricted Discretionary, Discretionary)
-    - "Mitigation_Measure" (string, e.g., Biofilters, Scrubbers)
-    - "Consent_Duration_Years" (integer, duration in years)
-    - "Date_Issued" (string, YYYY-MM-DD format)
-    - "Expiry_Date" (string, YYYY-MM-DD format)
-    - "Infringement_Count" (integer, number of infringements, or 0)
-    
-    If information is missing, use "Not Found" for text or 0 for numbers. Return ONLY valid JSON.
-    
-    Document Text:
-    {raw_text[:4000]} 
-    """
+    aup_rules = [f"E14.6.1.1.{i}" for i in range(1, 10)]
+    activity_types = ["Controlled", "Restricted Discretionary", "Discretionary"]
+    discharge_types = ["Chemical Manufacturing", "Concrete & Asphalt Batching", "Food Processing", "Wood Processing", "Waste Management", "Foundries & Metal Coating"]
+    mitigation_measures = ["Bag filters / Fabric dust collectors", "Wet scrubbers", "Biofilters", "Activated carbon adsorption", "Thermal oxidizers", "Cyclone separators"]
 
-    try:
-        # Call your local model 
-        response = ollama.chat(
-            model='llama3',
-            messages=[{'role': 'user', 'content': prompt}],
-            format='json'
-        )
-        
-        # Parse the AI's response into a Python dictionary
-        extracted_data = json.loads(response['message']['content'])
-        
-        # 3. Add system fields
-        extracted_data["Source_File"] = file_name
-        
-        # Figure out if it is expired based on the extracted date
-        try:
-            expiry_date = datetime.strptime(extracted_data["Expiry_Date"], "%Y-%m-%d")
-            extracted_data["Status"] = "🔴 Expired" if expiry_date < datetime.now() else "🟢 Valid"
-        except ValueError:
-             extracted_data["Status"] = "⚪ Unknown"
+    duration = int(np.random.randint(1, 31))
+    is_expired = np.random.choice([True, False], p=[0.25, 0.75])
+    date_issued, expiry_date, status = generate_dates_and_status(duration, is_expired)
 
-        # Generate dummy map coordinates since addresses require a separate mapping API
-        extracted_data["Latitude"] = float(np.random.uniform(-36.95, -36.75))
-        extracted_data["Longitude"] = float(np.random.uniform(174.65, 174.90))
-
-        return extracted_data
-
-    except Exception as e:
-        st.error(f"AI Extraction failed for {file_name}. Make sure Ollama is running. Error: {e}")
-        return None
+    return {
+        "Consent_ID": file_name.rsplit(".", 1)[0],
+        "Industry_Type": np.random.choice(discharge_types),
+        "AUP_E14_Rule": np.random.choice(aup_rules),
+        "Activity_Type": np.random.choice(activity_types, p=[0.3, 0.5, 0.2]),
+        "Mitigation_Measure": np.random.choice(mitigation_measures),
+        "Consent_Duration_Years": duration,
+        "Date_Issued": date_issued,
+        "Expiry_Date": expiry_date,
+        "Status": status,
+        "Infringement_Count": int(np.random.poisson(lam=1.5)),
+        "Latitude": float(np.random.uniform(-36.95, -36.75)),
+        "Longitude": float(np.random.uniform(174.65, 174.90)),
+        "Source_File": file_name
+    }
 
 @st.cache_data
 def load_default_mock_data():
@@ -195,7 +166,6 @@ def load_default_mock_data():
         statuses.append(stat)
 
     data = {
-        "Company_Name": [f"Auckland Industrial Ltd {i}" for i in range(n_records)], # NEW FIELD ADDED
         "Consent_ID": [f"BUN{10000 + i}" for i in range(n_records)],
         "Industry_Type": np.random.choice(discharge_types, n_records),
         "AUP_E14_Rule": np.random.choice(aup_rules, n_records),
@@ -283,11 +253,9 @@ if uploaded_files:
 
 if uploaded_files:
     with st.spinner(f"Extracting NLP metadata from {len(uploaded_files)} files..."):
-        # Filter out None results in case the AI fails on a file
         extracted_records = [parse_uploaded_file(file) for file in uploaded_files]
-        extracted_records = [record for record in extracted_records if record is not None]
         df = pd.DataFrame(extracted_records)
-    st.sidebar.success(f"Successfully processed documents!")
+    st.sidebar.success(f"Successfully processed {len(uploaded_files)} documents!")
 else:
     df = load_default_mock_data()
     st.sidebar.info("💡 Showing baseline dataset. Drop files above to parse.")
@@ -347,7 +315,7 @@ if selected_status != "All":
     filtered_df = filtered_df[filtered_df["Status"] == selected_status]
 
 # -----------------------------------------------------------------------------
-# 5. MAP PLACEHOLDER 
+# 5. MAP PLACEHOLDER (Reserves space for the map above the search bar)
 # -----------------------------------------------------------------------------
 map_container = st.container()
 
@@ -357,7 +325,7 @@ map_container = st.container()
 st.markdown("### 🔍 Global Information Search")
 search_query = st.text_input(
     label="Search anything:",
-    placeholder="Type a Company Name, Consent ID, rule, status, or date to instantly filter...",
+    placeholder="Type a Consent ID, rule, status (Valid/Expired), or date (e.g. 2025) to instantly filter...",
     label_visibility="collapsed"
 )
 
@@ -369,7 +337,7 @@ if search_query:
     filtered_df = filtered_df[search_mask]
 
 # -----------------------------------------------------------------------------
-# 7. RENDER THE MAP 
+# 7. RENDER THE MAP (Fills the placeholder we created above)
 # -----------------------------------------------------------------------------
 with map_container:
     st.subheader("📍 Live Map: Air Discharge Consent Locations")
@@ -379,8 +347,8 @@ with map_container:
             filtered_df,
             lat="Latitude",
             lon="Longitude",
-            hover_name="Company_Name",
-            hover_data=["Consent_ID", "Status", "Industry_Type", "AUP_E14_Rule"],
+            hover_name="Consent_ID",
+            hover_data=["Status", "Industry_Type", "AUP_E14_Rule", "Expiry_Date", "Infringement_Count"],
             color="Status",
             color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
             size=filtered_df["Infringement_Count"] + 2,
@@ -542,19 +510,8 @@ st.markdown("---")
 st.subheader("🔍 Extracted Data & Document Source Logs")
 st.markdown("Review data items currently matching the filter and search parameters:")
 
-# --- NEW CSV DOWNLOAD BUTTON ---
-csv_data = filtered_df.to_csv(index=False).encode('utf-8')
-st.download_button(
-    label="💾 Download Extracted Data as CSV",
-    data=csv_data,
-    file_name='extracted_auckland_consents.csv',
-    mime='text/csv',
-)
-st.markdown("")
-
-# --- UPDATED COLUMN LIST (Added Company_Name) ---
 display_cols = [
-    "Company_Name", "Consent_ID", "Status", "Date_Issued", "Expiry_Date", 
+    "Consent_ID", "Status", "Date_Issued", "Expiry_Date", 
     "Consent_Duration_Years", "Industry_Type", "AUP_E14_Rule", 
     "Activity_Type", "Mitigation_Measure", "Infringement_Count", "Source_File"
 ]
@@ -623,7 +580,7 @@ if user_prompt := st.chat_input("Ask something about this filtered data..."):
                 If the answer cannot be found in this data, say you cannot find it in the current view. Keep answers clear and direct.
                 """
                 
-                # Call local Ollama model
+                # Call local Ollama model (Make sure Ollama is running and you pulled llama3 or phi3)
                 response = ollama.chat(
                     model='llama3',
                     messages=[
