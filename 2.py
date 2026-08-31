@@ -225,7 +225,8 @@ with col2:
 with col3:
     st.markdown("**📍 Live Consent Locations**")
     if not filtered_df.empty:
-        fig_map = px.scatter_mapbox(
+        # 1. Change scatter_mapbox to scatter_map
+        fig_map = px.scatter_map(
             filtered_df,
             lat="Latitude",
             lon="Longitude",
@@ -233,11 +234,13 @@ with col3:
             hover_data=["Status", "Industry_Type", "AUP_E14_Rule"],
             color="Status",
             color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
-            size="Infringement_Count",
+            # I added your +2 trick back so zero-infringement points don't vanish!
+            size=filtered_df["Infringement_Count"] + 2, 
             zoom=9,
             height=250
         )
-        fig_map.update_layout(mapbox_style="carto-darkmatter", margin={"r":0,"t":0,"l":0,"b":0})
+        # 2. Change mapbox_style to map_style
+        fig_map.update_layout(map_style="carto-darkmatter", margin={"r":0,"t":0,"l":0,"b":0})
         st.plotly_chart(fig_map, use_container_width=True)
     else:
         st.warning("No records match your search criteria.")
