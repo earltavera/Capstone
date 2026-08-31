@@ -15,7 +15,7 @@ except ImportError:
     PYPDF_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
-# 1. PAGE CONFIGURATION
+# 1. PAGE CONFIGURATION & STYLING
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="AI-Driven Air Discharge Consents Dashboard",
@@ -23,8 +23,49 @@ st.set_page_config(
     layout="wide"
 )
 
+# Custom CSS to make Tabs larger, bold, and bordered
+st.markdown("""
+<style>
+    /* Style the Tab buttons bar container */
+    div[data-baseweb="tab-list"] {
+        gap: 12px;
+        background-color: rgba(240, 242, 246, 0.4);
+        padding: 8px 12px;
+        border-radius: 12px;
+        border: 2px solid #31333F22;
+        margin-bottom: 20px;
+    }
+
+    /* Style each individual Tab button */
+    button[data-baseweb="tab"] {
+        font-size: 17px !important;
+        font-weight: 700 !important;
+        padding: 12px 20px !important;
+        border-radius: 8px !important;
+        border: 1px solid #d3d3d3 !important;
+        background-color: #ffffff !important;
+        transition: all 0.3s ease;
+    }
+
+    /* Hover effect on Tabs */
+    button[data-baseweb="tab"]:hover {
+        border-color: #ff4b4b !important;
+        color: #ff4b4b !important;
+        background-color: #fff5f5 !important;
+    }
+
+    /* Highlight Active Selected Tab */
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background-color: #ff4b4b !important;
+        color: white !important;
+        border: 2px solid #ff4b4b !important;
+        box-shadow: 0px 4px 10px rgba(0,0,0,0.15);
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # -----------------------------------------------------------------------------
-# 2. HELPER FUNCTIONS
+# 2. HELPER FUNCTIONS & API INTEGRATION (Weather & Air Quality)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=600) 
 def fetch_auckland_environmental_data():
@@ -47,6 +88,7 @@ def fetch_auckland_environmental_data():
         return None
 
 def generate_dates_and_status(duration_years, is_expired_bias=False):
+    """Generates realistic issued/expiry dates with explicit integer casting."""
     today = datetime.now()
     dur = int(duration_years)
     
@@ -62,6 +104,7 @@ def generate_dates_and_status(duration_years, is_expired_bias=False):
     return date_issued.strftime("%Y-%m-%d"), expiry_date.strftime("%Y-%m-%d"), status
 
 def parse_uploaded_file(uploaded_file):
+    """Reads an uploaded PDF or TXT file and extracts/simulates structured data."""
     file_name = uploaded_file.name
     raw_text = ""
     
@@ -103,6 +146,7 @@ def parse_uploaded_file(uploaded_file):
 
 @st.cache_data
 def load_default_mock_data():
+    """Baseline fallback dataset with realistic dates and expiration tracking."""
     np.random.seed(42)
     n_records = 60
     aup_rules = [f"E14.6.1.1.{i}" for i in range(1, 10)]
@@ -138,19 +182,61 @@ def load_default_mock_data():
     return pd.DataFrame(data)
 
 # -----------------------------------------------------------------------------
-# 3. SIDEBAR CONTROLS
+# 3. DASHBOARD TITLE & LIVE CONDITIONS
 # -----------------------------------------------------------------------------
-st.sidebar.title("🌱 Auckland Air Quality")
-st.sidebar.button("Dashboard (Air)")
-st.sidebar.button("Activity Log")
-st.sidebar.button("Industry Breakdown")
-st.sidebar.button("AUP Rules & Compliance")
+st.title("🇳🇿 AI-Driven Dashboard for Analysing Air Discharge Consents in Auckland")
 
-st.sidebar.markdown("---")
+# --- DYNAMIC TIME, DATE & LOCATION BANNER ---
+nz_timezone = ZoneInfo("Pacific/Auckland")
+now = datetime.now(nz_timezone)
 
+formatted_date = now.strftime("%A, %B %d, %Y")
+formatted_time = now.strftime("%I:%M %p")
+
+st.markdown(f"""
+<div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #ff4b4b; padding: 10px 18px; border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+    <div>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📍 Location:</span> 
+        <span style="font-size: 15px; color: #495057;">Auckland, Region 1010, New Zealand 🇳🇿</span>
+    </div>
+    <div>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📅 Date:</span> 
+        <span style="font-size: 15px; color: #495057; margin-right: 15px;">{formatted_date}</span>
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">⏰ Local Time:</span> 
+        <span style="font-size: 15px; color: #ff4b4b; font-weight: bold;">{formatted_time} NZST</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# --- Live Environmental & Meteorological Widget ---
+env_data = fetch_auckland_environmental_data()
+if env_data:
+    st.markdown("#### 🌤️ Live Auckland Ambient Conditions")
+    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+    
+    m_col1.metric("Temperature", f"{env_data['temp']} °C", delta="Live API", border=True)
+    m_col2.metric("Wind Speed", f"{env_data['wind']} km/h", border=True)
+    m_col3.metric("Relative Humidity", f"{env_data['humidity']}%", border=True)
+    
+    aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
+    m_col4.metric("Air Quality Index", f"{aqi_text}", border=True)
+
+st.markdown("---")
+st.markdown("""
+*This dashboard analyzes industrial air discharge consents data extracted via LLM/NLP pipelines to support compliance monitoring and regulatory insights.*
+""")
+st.markdown("---")
+
+# -----------------------------------------------------------------------------
+# 4. SIDEBAR CONTROLS & HELP LINK
+# -----------------------------------------------------------------------------
+st.sidebar.header("📁 1. Upload Consents")
+
+# Initialize session state for file uploader key if not present
 if "file_uploader_key" not in st.session_state:
     st.session_state["file_uploader_key"] = 0
 
+# File uploader using dynamic key from session_state
 uploaded_files = st.sidebar.file_uploader(
     "Upload PDF or TXT Consent Files",
     type=["pdf", "txt"],
@@ -158,34 +244,90 @@ uploaded_files = st.sidebar.file_uploader(
     key=f"uploader_{st.session_state['file_uploader_key']}"
 )
 
+# Clear button below file uploader
 if uploaded_files:
-    if st.sidebar.button("🗑️ Clear Uploaded Files", use_container_width=True):
+    if st.sidebar.button("🗑️ Clear Uploaded Files", help="Reset uploader and return to default view", use_container_width=True):
         st.session_state["file_uploader_key"] += 1
         st.rerun()
-    with st.spinner(f"Extracting data from {len(uploaded_files)} files..."):
+
+if uploaded_files:
+    with st.spinner(f"Extracting NLP metadata from {len(uploaded_files)} files..."):
         extracted_records = [parse_uploaded_file(file) for file in uploaded_files]
         df = pd.DataFrame(extracted_records)
-    st.sidebar.success(f"Processed {len(uploaded_files)} documents!")
+    st.sidebar.success(f"Successfully processed {len(uploaded_files)} documents!")
 else:
     df = load_default_mock_data()
-    st.sidebar.info("💡 Showing baseline data.")
+    st.sidebar.info("💡 Showing baseline dataset. Drop files above to parse.")
 
 st.sidebar.markdown("---")
-st.sidebar.header("🔍 Filters")
+st.sidebar.header("🔍 2. Drop-Down Filters")
+
 unique_industries = ["All"] + sorted(list(df["Industry_Type"].unique()))
-selected_industry = st.sidebar.selectbox("Industry:", options=unique_industries)
+selected_industry = st.sidebar.selectbox("Select Industrial Activity Type:", options=unique_industries)
+
+unique_activities = ["All"] + sorted(list(df["Activity_Type"].unique()))
+selected_activity = st.sidebar.selectbox("Select Activity Risk Category:", options=unique_activities)
 
 unique_statuses = ["All", "🟢 Valid", "🔴 Expired"]
-selected_status = st.sidebar.selectbox("Status:", options=unique_statuses)
+selected_status = st.sidebar.selectbox("Select Consent Status:", options=unique_statuses)
+
+st.sidebar.markdown("---")
+
+# --- HELP LINK / POPOVER IN SIDEBAR ---
+with st.sidebar.popover("❓ How to Use This Dashboard"):
+    st.markdown("### 📘 User Guide & Instructions")
+    st.markdown("""
+    Follow these simple steps to navigate and analyze air discharge consents:
+
+    1. **Upload Documents (Optional):**
+       * Drop your PDF or TXT consent files into the **Upload Consents** box in the sidebar.
+       * The NLP pipeline will extract key data fields automatically.
+       * Click **Clear Uploaded Files** to remove current files and start fresh.
+       * *Default:* If no file is uploaded, standard Auckland baseline data is displayed.
+
+    2. **Filter Your View:**
+       * Use the sidebar drop-downs (**Industry Type**, **Activity Risk**, or **Status**) to narrow down records.
+
+    3. **Global Search Bar:**
+       * Type keywords in the search bar (e.g., `BUN10002`, `Biofilters`, `Expired`, `2025`) to instantly isolate specific records.
+
+    4. **Analyze Map & Live Weather:**
+       * Review the live ambient conditions for Auckland.
+       * Hover over map pins to check individual plant locations, risk categories, and infringement histories.
+
+    5. **Explore Analytical Tabs:**
+       * **Tab 1 (Rules & Risk):** Check high-risk AUP E14 rule infringements.
+       * **Tab 2 (Discharges & Mitigations):** Analyze industry distributions and active air scrubbing controls.
+       * **Tab 3 (Duration & Patterns):** Review consent timeline distributions.
+       * **Tab 4 (Explore Data Analytics):** High-level compliance matrices, infringement heatmaps, and mitigation efficiency cross-analysis.
+
+    6. **Inspect & Export Raw Data:**
+       * Scroll to the bottom table to view styled records (🟢 Valid vs 🔴 Expired).
+    """)
 
 filtered_df = df.copy()
 if selected_industry != "All":
     filtered_df = filtered_df[filtered_df["Industry_Type"] == selected_industry]
+if selected_activity != "All":
+    filtered_df = filtered_df[filtered_df["Activity_Type"] == selected_activity]
 if selected_status != "All":
     filtered_df = filtered_df[filtered_df["Status"] == selected_status]
 
-# Global Search
-search_query = st.sidebar.text_input("Search anything:", placeholder="e.g. BUN10002")
+# -----------------------------------------------------------------------------
+# 5. MAP PLACEHOLDER (Reserves space for the map above the search bar)
+# -----------------------------------------------------------------------------
+map_container = st.container()
+
+# -----------------------------------------------------------------------------
+# 6. GLOBAL SEARCH BAR
+# -----------------------------------------------------------------------------
+st.markdown("### 🔍 Global Information Search")
+search_query = st.text_input(
+    label="Search anything:",
+    placeholder="Type a Consent ID, rule, status (Valid/Expired), or date (e.g. 2025) to instantly filter...",
+    label_visibility="collapsed"
+)
+
 if search_query:
     search_mask = np.column_stack([
         filtered_df[col].astype(str).str.contains(search_query, case=False, na=False) 
@@ -194,142 +336,252 @@ if search_query:
     filtered_df = filtered_df[search_mask]
 
 # -----------------------------------------------------------------------------
-# 4. DASHBOARD HEADER
+# 7. RENDER THE MAP (Fills the placeholder we created above)
 # -----------------------------------------------------------------------------
-env_data = fetch_auckland_environmental_data()
-if env_data:
-    aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
-    st.markdown(f"**Auckland Live:** 🌡️ {env_data['temp']}°C | 💨 {env_data['wind']} km/h | 🌫️ AQI: {aqi_text}")
+with map_container:
+    st.subheader("📍 Live Map: Air Discharge Consent Locations")
 
-# -----------------------------------------------------------------------------
-# 5. TOP ROW: METRICS & MAP
-# -----------------------------------------------------------------------------
-col1, col2, col3, col4 = st.columns([1, 1, 1.5, 1])
-
-if not filtered_df.empty:
-    valid_count = len(filtered_df[filtered_df["Status"] == "🟢 Valid"])
-    expired_count = len(filtered_df[filtered_df["Status"] == "🔴 Expired"])
-    total_infringements = filtered_df["Infringement_Count"].sum()
-    avg_duration = filtered_df['Consent_Duration_Years'].mean()
-else:
-    valid_count, expired_count, total_infringements, avg_duration = 0, 0, 0, 0
-
-with col1:
-    st.metric(label="Total Active Air Consents", value=valid_count)
-    st.metric(label="Total Infringements", value=total_infringements)
-
-with col2:
-    st.metric(label="Expired Consents", value=expired_count)
-    st.metric(label="Avg. Consent Duration", value=f"{avg_duration:.1f} Yrs")
-
-with col3:
-    st.markdown("**📍 Live Consent Locations**")
     if not filtered_df.empty:
-        # 1. Change scatter_mapbox to scatter_map
+        # Changed to scatter_map for Plotly v6+
         fig_map = px.scatter_map(
             filtered_df,
             lat="Latitude",
             lon="Longitude",
             hover_name="Consent_ID",
-            hover_data=["Status", "Industry_Type", "AUP_E14_Rule"],
+            hover_data=["Status", "Industry_Type", "AUP_E14_Rule", "Expiry_Date", "Infringement_Count"],
             color="Status",
             color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
-            # I added your +2 trick back so zero-infringement points don't vanish!
-            size=filtered_df["Infringement_Count"] + 2, 
-            zoom=9,
-            height=250
+            size=filtered_df["Infringement_Count"] + 2,
+            zoom=10,
+            height=450
         )
-        # 2. Change mapbox_style to map_style
-        fig_map.update_layout(map_style="carto-darkmatter", margin={"r":0,"t":0,"l":0,"b":0})
+        # Changed mapbox_style to map_style
+        fig_map.update_layout(map_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0})
         st.plotly_chart(fig_map, use_container_width=True)
     else:
-        st.warning("No records match your search criteria.")
-
-with col4:
-    st.markdown("**Consent Status**")
-    if not filtered_df.empty:
-        status_counts = filtered_df["Status"].value_counts().reset_index()
-        fig_donut = px.pie(status_counts, values="count", names="Status", hole=0.7,
-                           color="Status", color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"})
-        fig_donut.update_layout(height=250, margin=dict(t=0, b=0, l=0, r=0), showlegend=False)
+        st.warning("No records match your search criteria to map.")
         
-        # Adding total count in the center
-        fig_donut.add_annotation(text=f"{len(filtered_df)}<br>Total", x=0.5, y=0.5, font_size=20, showarrow=False)
-        st.plotly_chart(fig_donut, use_container_width=True)
-
-st.markdown("---")
+    st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 6. MIDDLE ROW: CHARTS
+# 8. KPI METRICS OVERVIEW
 # -----------------------------------------------------------------------------
-col_chart1, col_chart2 = st.columns(2)
-
 if not filtered_df.empty:
-    with col_chart1:
-        st.markdown("**Duration Pattern (Years)**")
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Total Consents Found", len(filtered_df), border=True)
+    with col2:
+        valid_count = len(filtered_df[filtered_df["Status"] == "🟢 Valid"])
+        st.metric("Active / Valid Consents", valid_count, border=True)
+    with col3:
+        expired_count = len(filtered_df[filtered_df["Status"] == "🔴 Expired"])
+        st.metric("Expired Consents", expired_count, border=True)
+    with col4:
+        st.metric("Total Infringements", filtered_df["Infringement_Count"].sum(), border=True)
+    with col5:
+        st.metric("Avg. Duration", f"{filtered_df['Consent_Duration_Years'].mean():.1f} Yrs", border=True)
+    st.markdown("---")
+else:
+    st.error("⚠️ No entries match your active drop-downs or text search keywords.")
+    st.stop()
+
+# -----------------------------------------------------------------------------
+# 9. ENHANCED VISUALIZATION TABS
+# -----------------------------------------------------------------------------
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📋  TAB 1: Rule Rankings & Compliance Risks", 
+    "🏭  TAB 2: Discharges & Mitigation Profiles", 
+    "⏳  TAB 3: Consent Duration & Regulatory Patterns",
+    "📊  TAB 4: Explore Data Analytics & Compliance Intelligence"
+])
+
+with tab1:
+    with st.container(border=True):
+        st.header("AUP E14 Rule Rankings & Compliance Risks")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.subheader("1. Infringement Frequency by AUP E14 Rule")
+            rule_rankings = filtered_df.groupby("AUP_E14_Rule")["Infringement_Count"].sum().reset_index()
+            fig_rules = px.bar(
+                rule_rankings, x="Infringement_Count", y="AUP_E14_Rule", orientation="h",
+                labels={"Infringement_Count": "Total Infringements", "AUP_E14_Rule": "Rule Code"},
+                color="Infringement_Count", color_continuous_scale="Reds"
+            )
+            fig_rules.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_rules, use_container_width=True)
+
+        with col_right:
+            st.subheader("4. Infringed Rules by Activity Type")
+            risk_df = filtered_df.groupby(["Activity_Type", "AUP_E14_Rule"])["Infringement_Count"].sum().reset_index()
+            fig_risk = px.sunburst(
+                risk_df, path=["Activity_Type", "AUP_E14_Rule"], values="Infringement_Count",
+                color="Activity_Type", color_discrete_map={"Controlled": "#2ca02c", "Restricted Discretionary": "#ff7f0e", "Discretionary": "#d62728"}
+            )
+            st.plotly_chart(fig_risk, use_container_width=True)
+
+with tab2:
+    with st.container(border=True):
+        st.header("Industrial Profile & Mitigation Profiles")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.subheader("2. Main Consented Industrial Air Discharges")
+            industry_counts = filtered_df["Industry_Type"].value_counts().reset_index()
+            industry_counts.columns = ["Industry_Type", "Consent_Count"]
+            fig_ind = px.pie(industry_counts, values="Consent_Count", names="Industry_Type", hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            st.plotly_chart(fig_ind, use_container_width=True)
+
+        with col_right:
+            st.subheader("3. Primary Engineering Mitigation Measures")
+            mitigation_counts = filtered_df["Mitigation_Measure"].value_counts().reset_index()
+            mitigation_counts.columns = ["Mitigation_Measure", "Count"]
+            fig_mit = px.bar(mitigation_counts, x="Count", y="Mitigation_Measure", orientation="h", color="Count", color_continuous_scale="Blues")
+            fig_mit.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_mit, use_container_width=True)
+
+with tab3:
+    with st.container(border=True):
+        st.header("5. Regulatory Duration Patterns")
+        st.subheader("Distribution of Consent Durations (1 to 30 Years)")
         fig_dist = px.histogram(
             filtered_df, x="Consent_Duration_Years", nbins=30,
+            labels={"Consent_Duration_Years": "Consent Duration (Years)"},
             color="Status", barmode="stack",
             color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"}
         )
-        fig_dist.update_layout(height=300, margin=dict(t=10, b=0, l=0, r=0))
+        fig_dist.update_layout(xaxis=dict(tickmode='linear', tick0=1, dtick=1))
         st.plotly_chart(fig_dist, use_container_width=True)
 
-    with col_chart2:
-        st.markdown("**Top Emitting Industries**")
-        industry_counts = filtered_df["Industry_Type"].value_counts().reset_index()
-        industry_counts.columns = ["Industry_Type", "Count"]
-        fig_ind = px.bar(industry_counts, x="Count", y="Industry_Type", orientation="h")
-        fig_ind.update_layout(yaxis={'categoryorder':'total ascending'}, height=300, margin=dict(t=10, b=0, l=0, r=0))
-        st.plotly_chart(fig_ind, use_container_width=True)
+with tab4:
+    with st.container(border=True):
+        st.header("📊 High-Level Compliance Analytics & Mitigation Intelligence")
+        st.markdown("Advanced cross-dimensional analysis for regulatory auditing and compliance enforcement.")
+        
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            st.subheader("1. Infringements vs. Mitigation Measure Efficiency")
+            mit_inf_df = filtered_df.groupby("Mitigation_Measure")["Infringement_Count"].mean().reset_index()
+            mit_inf_df.columns = ["Mitigation_Measure", "Avg_Infringements"]
+            
+            fig_mit_eff = px.bar(
+                mit_inf_df, 
+                x="Mitigation_Measure", 
+                y="Avg_Infringements",
+                color="Avg_Infringements",
+                color_continuous_scale="Oranges",
+                labels={"Avg_Infringements": "Avg Infringements / Site", "Mitigation_Measure": "Mitigation Tech"}
+            )
+            fig_mit_eff.update_layout(xaxis_tickangle=-30)
+            st.plotly_chart(fig_mit_eff, use_container_width=True)
 
+        with col_b:
+            st.subheader("2. Compliance Risk Profile Matrix (Industry vs Activity Risk)")
+            pivot_df = filtered_df.pivot_table(
+                index="Industry_Type", 
+                columns="Activity_Type", 
+                values="Infringement_Count", 
+                aggfunc="sum", 
+                fill_value=0
+            )
+            fig_piv = px.imshow(
+                pivot_df, 
+                text_auto=True, 
+                color_continuous_scale="Reds",
+                aspect="auto",
+                labels=dict(x="Risk Category", y="Industry Type", color="Total Infringements")
+            )
+            st.plotly_chart(fig_piv, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("3. Comprehensive Industry Compliance Cross-Tabulation")
+        
+        summary_table = filtered_df.groupby(["Industry_Type", "Activity_Type"]).agg(
+            Total_Consents=("Consent_ID", "count"),
+            Total_Infringements=("Infringement_Count", "sum"),
+            Avg_Duration_Yrs=("Consent_Duration_Years", "mean")
+        ).reset_index()
+        
+        summary_table["Avg_Duration_Yrs"] = summary_table["Avg_Duration_Yrs"].round(1)
+        st.dataframe(summary_table, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# 10. EXTRACTED DATA EXPLORER
+# -----------------------------------------------------------------------------
 st.markdown("---")
+st.subheader("🔍 Extracted Data & Document Source Logs")
+st.markdown("Review data items currently matching the filter and search parameters:")
 
-# -----------------------------------------------------------------------------
-# 7. BOTTOM ROW: DATA TABLE
-# -----------------------------------------------------------------------------
-st.markdown("**Recent Consents & Actions**")
 display_cols = [
     "Consent_ID", "Status", "Date_Issued", "Expiry_Date", 
-    "Consent_Duration_Years", "Industry_Type", "AUP_E14_Rule", "Infringement_Count"
+    "Consent_Duration_Years", "Industry_Type", "AUP_E14_Rule", 
+    "Activity_Type", "Mitigation_Measure", "Infringement_Count", "Source_File"
 ]
-table_df = filtered_df[display_cols] if not filtered_df.empty else filtered_df
+table_df = filtered_df[display_cols]
 
 def style_status(val):
     if "Valid" in str(val):
-        return "color: #2ca02c; font-weight: bold;"
+        return "background-color: rgba(44, 160, 44, 0.2); color: #2ca02c; font-weight: bold;"
     elif "Expired" in str(val):
-        return "color: #d62728; font-weight: bold;"
+        return "background-color: rgba(214, 39, 40, 0.2); color: #d62728; font-weight: bold;"
     return ""
 
-if not table_df.empty:
-    styled_table = table_df.style.map(style_status, subset=["Status"])
-    st.dataframe(styled_table, use_container_width=True, hide_index=True)
+styled_table = table_df.style.map(style_status, subset=["Status"])
+st.dataframe(styled_table, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 8. LOCAL DASHBOARD CHATBOT
+# 11. FOOTER
 # -----------------------------------------------------------------------------
 st.markdown("---")
-st.markdown("**Need setup help?**")
+st.markdown(
+    """
+    <div style="text-align: center; color: #888888; font-size: 14px; padding: 10px;">
+        Developed by <strong>Earl Tavera 2026</strong> | AI-Driven Air Discharge Consents Dashboard
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+# -----------------------------------------------------------------------------
+# 12. LOCAL DASHBOARD CHATBOT (Ollama - No API Key Needed)
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("💬 Ask the Dashboard Assistant")
+st.markdown("Have a question about the records currently displayed on your screen? Ask below:")
 
+# Initialize chat history in session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Display previous chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if user_prompt := st.chat_input("Ask a question about the data above..."):
+# User text input
+if user_prompt := st.chat_input("Ask something about this filtered data..."):
+    # Add user message to state and display it
     st.session_state.messages.append({"role": "user", "content": user_prompt})
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
+    # Generate response using local Ollama
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                data_context = filtered_df.to_string(index=False)
-                system_prompt = f"Answer the user's question using ONLY the temporary data currently visible on the dashboard below:\n\n{data_context}"
+                import ollama
                 
+                # Convert the currently filtered dataframe to text format
+                data_context = filtered_df.to_string(index=False)
+                
+                system_prompt = f"""
+                You are a helpful assistant for an air discharge consents dashboard.
+                Answer the user's question using ONLY the temporary data currently visible on the dashboard below:
+                
+                {data_context}
+                
+                If the answer cannot be found in this data, say you cannot find it in the current view. Keep answers clear and direct.
+                """
+                
+                # Call local Ollama model (Make sure Ollama is running and you pulled llama3 or phi3)
                 response = ollama.chat(
                     model='llama3',
                     messages=[
@@ -337,8 +589,13 @@ if user_prompt := st.chat_input("Ask a question about the data above..."):
                         {'role': 'user', 'content': user_prompt}
                     ]
                 )
+                
                 assistant_reply = response['message']['content']
                 st.markdown(assistant_reply)
+                
+                # Save assistant response to state
                 st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
+                
             except Exception as e:
-                st.error(f"Could not connect to local Ollama. Error: {e}")
+                error_msg = f"Could not connect to local Ollama. Make sure Ollama is running on your computer. Error: {e}"
+                st.error(error_msg)
