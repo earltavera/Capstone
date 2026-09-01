@@ -352,6 +352,7 @@ with map_container:
             color="Status",
             color_discrete_map={"🟢 Valid": "#2ca02c", "🔴 Expired": "#d62728"},
             size=filtered_df["Infringement_Count"] + 2,
+            center={"lat": -36.8485, "lon": 174.7633}, # <-- Added this line to lock on Auckland
             zoom=10,
             height=450
         )
@@ -362,7 +363,7 @@ with map_container:
         st.warning("No records match your search criteria to map.")
         
     st.markdown("---")
-
+    
 # -----------------------------------------------------------------------------
 # 8. KPI METRICS OVERVIEW
 # -----------------------------------------------------------------------------
