@@ -5,7 +5,6 @@ import plotly.express as px
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-import ollama
 
 # Optional import for PDF text extraction (run: pip install pypdf)
 try:
@@ -13,6 +12,13 @@ try:
     PYPDF_AVAILABLE = True
 except ImportError:
     PYPDF_AVAILABLE = False
+
+# Optional import for local LLM chat (run: pip install ollama)
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
 # 1. PAGE CONFIGURATION & STYLING
@@ -67,13 +73,13 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 # 2. HELPER FUNCTIONS & API INTEGRATION (Weather & Air Quality)
 # -----------------------------------------------------------------------------
-@st.cache_data(ttl=600) 
+@st.cache_data(ttl=600)
 def fetch_auckland_environmental_data():
     lat, lon = -36.8485, 174.7633
     try:
         w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m"
         w_res = requests.get(w_url, timeout=15).json()
-        
+
         aq_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=european_aqi"
         aq_res = requests.get(aq_url, timeout=15).json()
 
@@ -91,23 +97,28 @@ def generate_dates_and_status(duration_years, is_expired_bias=False):
     """Generates realistic issued/expiry dates with explicit integer casting."""
     today = datetime.now()
     dur = int(duration_years)
-    
+
     if is_expired_bias:
         days_ago = int(np.random.randint((dur * 365) + 1, (dur * 365) + 3000))
     else:
         days_ago = int(np.random.randint(1, dur * 365))
-        
-    date_issued = today - timedelta(days=int(days_ago)) 
-    expiry_date = date_issued + timedelta(days=int(dur * 365)) 
-    
+
+    date_issued = today - timedelta(days=int(days_ago))
+    expiry_date = date_issued + timedelta(days=int(dur * 365))
+
     status = "🔴 Expired" if expiry_date < today else "🟢 Valid"
     return date_issued.strftime("%Y-%m-%d"), expiry_date.strftime("%Y-%m-%d"), status
 
-def parse_uploaded_file(uploaded_file):
-    """Reads an uploaded PDF or TXT file and extracts/simulates structured data."""
+
+def extract_raw_text(uploaded_file):
+    """
+    Extracts the actual raw text content from an uploaded PDF or TXT file.
+    This is the real document content that will be handed to the chatbot,
+    separate from the simulated structured fields below.
+    """
     file_name = uploaded_file.name
     raw_text = ""
-    
+
     if file_name.endswith(".pdf") and PYPDF_AVAILABLE:
         try:
             reader = PdfReader(uploaded_file)
@@ -117,8 +128,32 @@ def parse_uploaded_file(uploaded_file):
     elif file_name.endswith(".txt"):
         raw_text = str(uploaded_file.read(), "utf-8", errors="ignore")
 
+    # Reset pointer in case the file object is read again elsewhere
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+
+    return raw_text.strip()
+
+
+def parse_uploaded_file(uploaded_file, raw_text=""):
+    """
+    Builds the structured 'extracted metadata' row shown in the tables/charts.
+
+    NOTE: the field values below (Industry_Type, AUP_E14_Rule, dates, etc.) are
+    SIMULATED placeholders, seeded from the filename -- they are not actually
+    parsed out of the PDF/TXT content. The dashboard is a demo/prototype for
+    the visuals and workflow. If you need these fields to reflect the real
+    document content, replace this block with an actual NLP/LLM extraction
+    step that reads `raw_text` (the chatbot at the bottom of the dashboard
+    already uses the real `raw_text`, so it will answer correctly regardless
+    of this simulation).
+    """
+    file_name = uploaded_file.name
+
     np.random.seed(abs(hash(file_name)) % (10 ** 8))
-    
+
     aup_rules = [f"E14.6.1.1.{i}" for i in range(1, 10)]
     activity_types = ["Controlled", "Restricted Discretionary", "Discretionary"]
     discharge_types = ["Chemical Manufacturing", "Concrete & Asphalt Batching", "Food Processing", "Wood Processing", "Waste Management", "Foundries & Metal Coating"]
@@ -141,7 +176,8 @@ def parse_uploaded_file(uploaded_file):
         "Infringement_Count": int(np.random.poisson(lam=1.5)),
         "Latitude": float(np.random.uniform(-36.95, -36.75)),
         "Longitude": float(np.random.uniform(174.65, 174.90)),
-        "Source_File": file_name
+        "Source_File": file_name,
+        "Has_Extracted_Text": bool(raw_text),
     }
 
 @st.cache_data
@@ -156,7 +192,7 @@ def load_default_mock_data():
 
     durations = np.random.randint(1, 31, n_records)
     dates_issued, expiry_dates, statuses = [], [], []
-    
+
     for dur in durations:
         is_exp = np.random.choice([True, False], p=[0.30, 0.70])
         d_iss, d_exp, stat = generate_dates_and_status(dur, is_exp)
@@ -177,9 +213,37 @@ def load_default_mock_data():
         "Infringement_Count": np.random.poisson(lam=1.2, size=n_records),
         "Latitude": np.random.uniform(-36.95, -36.75, n_records),
         "Longitude": np.random.uniform(174.65, 174.90, n_records),
-        "Source_File": ["Default Baseline Data"] * n_records
+        "Source_File": ["Default Baseline Data"] * n_records,
+        "Has_Extracted_Text": [False] * n_records,
     }
     return pd.DataFrame(data)
+
+
+def build_chat_context(filtered_df, file_texts, max_chars_per_doc=3000, max_total_chars=12000):
+    """
+    Builds the text handed to the local chatbot: real extracted document text
+    for whichever files are currently visible after filtering/search, plus a
+    structured summary of the visible records. Truncated to keep the prompt
+    within a local model's context window.
+    """
+    active_files = filtered_df["Source_File"].unique().tolist()
+
+    snippets = []
+    total_chars = 0
+    for fname in active_files:
+        text = file_texts.get(fname, "")
+        if not text:
+            continue
+        snippet = text[:max_chars_per_doc]
+        block = f"--- Document: {fname} ---\n{snippet}"
+        if total_chars + len(block) > max_total_chars:
+            break
+        snippets.append(block)
+        total_chars += len(block)
+
+    raw_text_context = "\n\n".join(snippets)
+    structured_context = filtered_df.to_string(index=False)
+    return raw_text_context, structured_context
 
 # -----------------------------------------------------------------------------
 # 3. DASHBOARD TITLE & LIVE CONDITIONS
@@ -196,13 +260,13 @@ formatted_time = now.strftime("%I:%M %p")
 st.markdown(f"""
 <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #ff4b4b; padding: 10px 18px; border-radius: 8px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
     <div>
-        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📍 Location:</span> 
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📍 Location:</span>
         <span style="font-size: 15px; color: #495057;">Auckland, Region 1010, New Zealand 🇳🇿</span>
     </div>
     <div>
-        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📅 Date:</span> 
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">📅 Date:</span>
         <span style="font-size: 15px; color: #495057; margin-right: 15px;">{formatted_date}</span>
-        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">⏰ Local Time:</span> 
+        <span style="font-size: 16px; font-weight: bold; color: #2c3e50;">⏰ Local Time:</span>
         <span style="font-size: 15px; color: #ff4b4b; font-weight: bold;">{formatted_time} NZST</span>
     </div>
 </div>
@@ -213,11 +277,11 @@ env_data = fetch_auckland_environmental_data()
 if env_data:
     st.markdown("#### 🌤️ Live Auckland Ambient Conditions")
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-    
+
     m_col1.metric("Temperature", f"{env_data['temp']} °C", delta="Live API", border=True)
     m_col2.metric("Wind Speed", f"{env_data['wind']} km/h", border=True)
     m_col3.metric("Relative Humidity", f"{env_data['humidity']}%", border=True)
-    
+
     aqi_text = "Good 🟢" if env_data['aqi'] <= 20 else "Moderate 🟡"
     m_col4.metric("Air Quality Index", f"{aqi_text}", border=True)
 
@@ -236,6 +300,11 @@ st.sidebar.header("📁 1. Upload Consents")
 if "file_uploader_key" not in st.session_state:
     st.session_state["file_uploader_key"] = 0
 
+# Session state store for real extracted document text, keyed by filename.
+# This is what powers the "search the loaded PDFs" chatbot below.
+if "file_texts" not in st.session_state:
+    st.session_state["file_texts"] = {}
+
 # File uploader using dynamic key from session_state
 uploaded_files = st.sidebar.file_uploader(
     "Upload PDF or TXT Consent Files",
@@ -248,16 +317,37 @@ uploaded_files = st.sidebar.file_uploader(
 if uploaded_files:
     if st.sidebar.button("🗑️ Clear Uploaded Files", help="Reset uploader and return to default view", use_container_width=True):
         st.session_state["file_uploader_key"] += 1
+        st.session_state["file_texts"] = {}
         st.rerun()
 
 if uploaded_files:
-    with st.spinner(f"Extracting NLP metadata from {len(uploaded_files)} files..."):
-        extracted_records = [parse_uploaded_file(file) for file in uploaded_files]
+    with st.spinner(f"Extracting text and NLP metadata from {len(uploaded_files)} files..."):
+        extracted_records = []
+        new_file_texts = {}
+        for file in uploaded_files:
+            raw_text = extract_raw_text(file)
+            new_file_texts[file.name] = raw_text
+            extracted_records.append(parse_uploaded_file(file, raw_text))
+        st.session_state["file_texts"] = new_file_texts
         df = pd.DataFrame(extracted_records)
+
+    n_with_text = sum(1 for t in st.session_state["file_texts"].values() if t)
     st.sidebar.success(f"Successfully processed {len(uploaded_files)} documents!")
+    if n_with_text < len(uploaded_files):
+        st.sidebar.warning(
+            f"⚠️ Could not extract readable text from {len(uploaded_files) - n_with_text} file(s) "
+            "(e.g. scanned/image-only PDFs). The chatbot can only search text it could extract."
+        )
 else:
     df = load_default_mock_data()
+    st.session_state["file_texts"] = {}
     st.sidebar.info("💡 Showing baseline dataset. Drop files above to parse.")
+
+st.sidebar.caption(
+    "ℹ️ Rule codes, activity type, dates, and mitigation measures are simulated "
+    "placeholder values for demo purposes. The chatbot below answers from the "
+    "**actual extracted text** of your uploaded files, not these placeholders."
+)
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 2. Drop-Down Filters")
@@ -281,7 +371,8 @@ with st.sidebar.popover("❓ How to Use This Dashboard"):
 
     1. **Upload Documents (Optional):**
        * Drop your PDF or TXT consent files into the **Upload Consents** box in the sidebar.
-       * The NLP pipeline will extract key data fields automatically.
+       * The dashboard extracts the real text of each file for the chatbot, and also
+         generates a demo set of structured fields for the charts above.
        * Click **Clear Uploaded Files** to remove current files and start fresh.
        * *Default:* If no file is uploaded, standard Auckland baseline data is displayed.
 
@@ -303,6 +394,11 @@ with st.sidebar.popover("❓ How to Use This Dashboard"):
 
     6. **Inspect & Export Raw Data:**
        * Scroll to the bottom table to view styled records (🟢 Valid vs 🔴 Expired).
+
+    7. **Ask the Dashboard Assistant:**
+       * Once your files are loaded and (optionally) filtered, ask the chatbot at the
+         bottom of the page. It answers using the real text extracted from whichever
+         documents are currently visible on screen.
     """)
 
 filtered_df = df.copy()
@@ -330,7 +426,7 @@ search_query = st.text_input(
 
 if search_query:
     search_mask = np.column_stack([
-        filtered_df[col].astype(str).str.contains(search_query, case=False, na=False) 
+        filtered_df[col].astype(str).str.contains(search_query, case=False, na=False)
         for col in filtered_df.columns
     ]).any(axis=1)
     filtered_df = filtered_df[search_mask]
@@ -361,9 +457,9 @@ with map_container:
         st.plotly_chart(fig_map, use_container_width=True)
     else:
         st.warning("No records match your search criteria to map.")
-        
+
     st.markdown("---")
-    
+
 # -----------------------------------------------------------------------------
 # 8. KPI METRICS OVERVIEW
 # -----------------------------------------------------------------------------
@@ -390,8 +486,8 @@ else:
 # 9. ENHANCED VISUALIZATION TABS
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
-    "📋  TAB 1: Rule Rankings & Compliance Risks", 
-    "🏭  TAB 2: Discharges & Mitigation Profiles", 
+    "📋  TAB 1: Rule Rankings & Compliance Risks",
+    "🏭  TAB 2: Discharges & Mitigation Profiles",
     "⏳  TAB 3: Consent Duration & Regulatory Patterns",
     "📊  TAB 4: Explore Data Analytics & Compliance Intelligence"
 ])
@@ -456,17 +552,17 @@ with tab4:
     with st.container(border=True):
         st.header("📊 High-Level Compliance Analytics & Mitigation Intelligence")
         st.markdown("Advanced cross-dimensional analysis for regulatory auditing and compliance enforcement.")
-        
+
         col_a, col_b = st.columns(2)
-        
+
         with col_a:
             st.subheader("1. Infringements vs. Mitigation Measure Efficiency")
             mit_inf_df = filtered_df.groupby("Mitigation_Measure")["Infringement_Count"].mean().reset_index()
             mit_inf_df.columns = ["Mitigation_Measure", "Avg_Infringements"]
-            
+
             fig_mit_eff = px.bar(
-                mit_inf_df, 
-                x="Mitigation_Measure", 
+                mit_inf_df,
+                x="Mitigation_Measure",
                 y="Avg_Infringements",
                 color="Avg_Infringements",
                 color_continuous_scale="Oranges",
@@ -478,15 +574,15 @@ with tab4:
         with col_b:
             st.subheader("2. Compliance Risk Profile Matrix (Industry vs Activity Risk)")
             pivot_df = filtered_df.pivot_table(
-                index="Industry_Type", 
-                columns="Activity_Type", 
-                values="Infringement_Count", 
-                aggfunc="sum", 
+                index="Industry_Type",
+                columns="Activity_Type",
+                values="Infringement_Count",
+                aggfunc="sum",
                 fill_value=0
             )
             fig_piv = px.imshow(
-                pivot_df, 
-                text_auto=True, 
+                pivot_df,
+                text_auto=True,
                 color_continuous_scale="Reds",
                 aspect="auto",
                 labels=dict(x="Risk Category", y="Industry Type", color="Total Infringements")
@@ -495,13 +591,13 @@ with tab4:
 
         st.markdown("---")
         st.subheader("3. Comprehensive Industry Compliance Cross-Tabulation")
-        
+
         summary_table = filtered_df.groupby(["Industry_Type", "Activity_Type"]).agg(
             Total_Consents=("Consent_ID", "count"),
             Total_Infringements=("Infringement_Count", "sum"),
             Avg_Duration_Yrs=("Consent_Duration_Years", "mean")
         ).reset_index()
-        
+
         summary_table["Avg_Duration_Yrs"] = summary_table["Avg_Duration_Yrs"].round(1)
         st.dataframe(summary_table, use_container_width=True)
 
@@ -513,8 +609,8 @@ st.subheader("🔍 Extracted Data & Document Source Logs")
 st.markdown("Review data items currently matching the filter and search parameters:")
 
 display_cols = [
-    "Consent_ID", "Status", "Date_Issued", "Expiry_Date", 
-    "Consent_Duration_Years", "Industry_Type", "AUP_E14_Rule", 
+    "Consent_ID", "Status", "Date_Issued", "Expiry_Date",
+    "Consent_Duration_Years", "Industry_Type", "AUP_E14_Rule",
     "Activity_Type", "Mitigation_Measure", "Infringement_Count", "Source_File"
 ]
 table_df = filtered_df[display_cols]
@@ -541,62 +637,103 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 # -----------------------------------------------------------------------------
 # 12. LOCAL DASHBOARD CHATBOT (Ollama - No API Key Needed)
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("💬 Ask the Dashboard Assistant")
-st.markdown("Have a question about the records currently displayed on your screen? Ask below:")
 
-# Initialize chat history in session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+if st.session_state["file_texts"]:
+    st.markdown(
+        "Ask anything about the **currently loaded and filtered documents** — the assistant "
+        "searches the actual extracted text of your uploaded files."
+    )
+else:
+    st.markdown(
+        "You're viewing the default baseline dataset (no files uploaded), so the assistant will "
+        "answer from the structured summary table shown above. Upload PDFs/TXT files to search "
+        "their real content."
+    )
 
-# Display previous chat messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+if not OLLAMA_AVAILABLE:
+    st.warning(
+        "⚠️ The `ollama` Python package isn't installed, so the chatbot is disabled. "
+        "Run `pip install ollama` and make sure the Ollama app is running locally "
+        "(with a model such as `llama3` pulled) to enable it."
+    )
+else:
+    # Initialize chat history in session state
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-# User text input
-if user_prompt := st.chat_input("Ask something about this filtered data..."):
-    # Add user message to state and display it
-    st.session_state.messages.append({"role": "user", "content": user_prompt})
-    with st.chat_message("user"):
-        st.markdown(user_prompt)
+    # Display previous chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    # Generate response using local Ollama
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                import ollama
-                
-                # Convert the currently filtered dataframe to text format
-                data_context = filtered_df.to_string(index=False)
-                
-                system_prompt = f"""
-                You are a helpful assistant for an air discharge consents dashboard.
-                Answer the user's question using ONLY the temporary data currently visible on the dashboard below:
-                
-                {data_context}
-                
-                If the answer cannot be found in this data, say you cannot find it in the current view. Keep answers clear and direct.
-                """
-                
-                # Call local Ollama model (Make sure Ollama is running and you pulled llama3 or phi3)
-                response = ollama.chat(
-                    model='llama3',
-                    messages=[
-                        {'role': 'system', 'content': system_prompt},
-                        {'role': 'user', 'content': user_prompt}
-                    ]
-                )
-                
-                assistant_reply = response['message']['content']
-                st.markdown(assistant_reply)
-                
-                # Save assistant response to state
-                st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
-                
-            except Exception as e:
-                error_msg = f"Could not connect to local Ollama. Make sure Ollama is running on your computer. Error: {e}"
-                st.error(error_msg)
+    # User text input
+    if user_prompt := st.chat_input("Ask something about the loaded documents..."):
+        # Add user message to state and display it
+        st.session_state.messages.append({"role": "user", "content": user_prompt})
+        with st.chat_message("user"):
+            st.markdown(user_prompt)
+
+        # Generate response using local Ollama
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    raw_text_context, structured_context = build_chat_context(
+                        filtered_df, st.session_state["file_texts"]
+                    )
+
+                    if raw_text_context:
+                        system_prompt = f"""
+                        You are a helpful assistant for an air discharge consents dashboard.
+                        Answer the user's question using the information below, which reflects
+                        only what is currently visible on the dashboard (after filters/search).
+
+                        1) RAW DOCUMENT TEXT extracted from the consent files currently shown:
+                        {raw_text_context}
+
+                        2) STRUCTURED SUMMARY of the records currently visible (note: fields like
+                        Industry_Type, AUP_E14_Rule, and dates in this summary are simulated demo
+                        placeholders, not parsed from the documents):
+                        {structured_context}
+
+                        Prefer the RAW DOCUMENT TEXT for questions about specific wording, clauses,
+                        or conditions in the consents. Use the STRUCTURED SUMMARY only for questions
+                        about counts, statuses, or comparisons across the visible records, and make
+                        clear when you are relying on simulated fields. If the answer isn't in either,
+                        say you cannot find it in the currently loaded documents. Keep answers clear
+                        and direct.
+                        """
+                    else:
+                        system_prompt = f"""
+                        You are a helpful assistant for an air discharge consents dashboard.
+                        No real document text is currently loaded (either no files were uploaded, or
+                        text could not be extracted from them). Answer using ONLY this structured
+                        summary of the data currently visible on the dashboard:
+
+                        {structured_context}
+
+                        If the answer cannot be found in this data, say you cannot find it in the
+                        current view. Keep answers clear and direct.
+                        """
+
+                    response = ollama.chat(
+                        model='llama3',
+                        messages=[
+                            {'role': 'system', 'content': system_prompt},
+                            {'role': 'user', 'content': user_prompt}
+                        ]
+                    )
+
+                    assistant_reply = response['message']['content']
+                    st.markdown(assistant_reply)
+
+                    st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
+
+                except Exception as e:
+                    error_msg = f"Could not connect to local Ollama. Make sure Ollama is running on your computer. Error: {e}"
+                    st.error(error_msg)
