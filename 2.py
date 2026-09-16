@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,12 +14,50 @@ try:
 except ImportError:
     PYPDF_AVAILABLE = False
 
-# Optional import for local LLM chat (run: pip install ollama)
+# Optional import for local LLM chat (run: pip install llama-cpp-python)
+# No background app/server needed -- this loads a local GGUF model file
+# directly in-process.
 try:
-    import ollama
-    OLLAMA_AVAILABLE = True
+    from llama_cpp import Llama
+    LLAMA_CPP_AVAILABLE = True
 except ImportError:
-    OLLAMA_AVAILABLE = False
+    LLAMA_CPP_AVAILABLE = False
+
+# Optional import for semantic search over the loaded documents
+# (run: pip install sentence-transformers)
+try:
+    from sentence_transformers import SentenceTransformer
+    EMBEDDINGS_AVAILABLE = True
+except ImportError:
+    EMBEDDINGS_AVAILABLE = False
+
+# -----------------------------------------------------------------------------
+# 0. LOCAL LLM & EMBEDDING MODEL CONFIGURATION
+# -----------------------------------------------------------------------------
+# Path to a local GGUF model file for llama-cpp-python. Download one (e.g. a
+# quantized Llama 3 or Phi-3 instruct model) from Hugging Face and point this
+# at it, or override it from the sidebar at runtime.
+DEFAULT_LLM_MODEL_PATH = os.environ.get(
+    "LOCAL_LLM_MODEL_PATH", "models/llama-3-8b-instruct.Q4_K_M.gguf"
+)
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # small, CPU-friendly, ~80MB
+
+
+@st.cache_resource(show_spinner=False)
+def load_llm(model_path):
+    """Loads (and caches) the local GGUF model via llama-cpp-python."""
+    return Llama(
+        model_path=model_path,
+        n_ctx=4096,
+        n_threads=max(1, (os.cpu_count() or 4) - 1),
+        verbose=False,
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def load_embedding_model():
+    """Loads (and caches) the local sentence-embedding model."""
+    return SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 # -----------------------------------------------------------------------------
 # 1. PAGE CONFIGURATION & STYLING
@@ -219,28 +258,62 @@ def load_default_mock_data():
     return pd.DataFrame(data)
 
 
-def build_chat_context(filtered_df, file_texts, max_chars_per_doc=3000, max_total_chars=12000):
-    """
-    Builds the text handed to the local chatbot: real extracted document text
-    for whichever files are currently visible after filtering/search, plus a
-    structured summary of the visible records. Truncated to keep the prompt
-    within a local model's context window.
-    """
-    active_files = filtered_df["Source_File"].unique().tolist()
+def chunk_text(text, chunk_size=800, overlap=150):
+    """Splits text into overlapping chunks so no single chunk is too long
+    for the embedding model or the LLM's context window, while overlap
+    keeps sentences that straddle a chunk boundary intact somewhere."""
+    text = " ".join(text.split())  # normalize whitespace
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    step = max(1, chunk_size - overlap)
+    while start < len(text):
+        chunks.append(text[start:start + chunk_size])
+        start += step
+    return chunks
 
-    snippets = []
-    total_chars = 0
-    for fname in active_files:
-        text = file_texts.get(fname, "")
-        if not text:
-            continue
-        snippet = text[:max_chars_per_doc]
-        block = f"--- Document: {fname} ---\n{snippet}"
-        if total_chars + len(block) > max_total_chars:
-            break
-        snippets.append(block)
-        total_chars += len(block)
 
+def embed_document(file_name, raw_text, embedder):
+    """Chunks a document and embeds each chunk once. Returns a list of
+    {"file": ..., "text": ..., "embedding": np.array} dicts."""
+    chunks = chunk_text(raw_text)
+    if not chunks:
+        return []
+    vectors = embedder.encode(chunks, normalize_embeddings=True)
+    return [
+        {"file": file_name, "text": chunk, "embedding": vec}
+        for chunk, vec in zip(chunks, vectors)
+    ]
+
+
+def retrieve_relevant_chunks(query, doc_chunks, active_files, embedder, top_k=5):
+    """Embeds the query and returns the top_k most similar chunks, restricted
+    to files currently visible after filtering/search."""
+    candidates = [c for c in doc_chunks if c["file"] in active_files]
+    if not candidates or embedder is None:
+        return []
+
+    query_vec = embedder.encode([query], normalize_embeddings=True)[0]
+    scored = []
+    for c in candidates:
+        score = float(np.dot(query_vec, c["embedding"]))
+        scored.append((score, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, c in scored[:top_k]]
+
+
+def build_chat_context(query, filtered_df, doc_chunks, embedder, top_k=5):
+    """
+    Builds the text handed to the local chatbot: the most semantically
+    relevant chunks of real extracted document text for the query (restricted
+    to whichever files are currently visible after filtering/search), plus a
+    structured summary of the visible records.
+    """
+    active_files = set(filtered_df["Source_File"].unique().tolist())
+    top_chunks = retrieve_relevant_chunks(query, doc_chunks, active_files, embedder, top_k=top_k)
+
+    snippets = [f"--- From {c['file']} ---\n{c['text']}" for c in top_chunks]
     raw_text_context = "\n\n".join(snippets)
     structured_context = filtered_df.to_string(index=False)
     return raw_text_context, structured_context
@@ -300,10 +373,13 @@ st.sidebar.header("📁 1. Upload Consents")
 if "file_uploader_key" not in st.session_state:
     st.session_state["file_uploader_key"] = 0
 
-# Session state store for real extracted document text, keyed by filename.
-# This is what powers the "search the loaded PDFs" chatbot below.
+# Session state store for real extracted document text, keyed by filename,
+# and the chunked+embedded version of it used for semantic search. This is
+# what powers the "search the loaded PDFs" chatbot below.
 if "file_texts" not in st.session_state:
     st.session_state["file_texts"] = {}
+if "doc_chunks" not in st.session_state:
+    st.session_state["doc_chunks"] = []
 
 # File uploader using dynamic key from session_state
 uploaded_files = st.sidebar.file_uploader(
@@ -318,17 +394,24 @@ if uploaded_files:
     if st.sidebar.button("🗑️ Clear Uploaded Files", help="Reset uploader and return to default view", use_container_width=True):
         st.session_state["file_uploader_key"] += 1
         st.session_state["file_texts"] = {}
+        st.session_state["doc_chunks"] = []
         st.rerun()
 
 if uploaded_files:
+    embedder = load_embedding_model() if EMBEDDINGS_AVAILABLE else None
+
     with st.spinner(f"Extracting text and NLP metadata from {len(uploaded_files)} files..."):
         extracted_records = []
         new_file_texts = {}
+        new_doc_chunks = []
         for file in uploaded_files:
             raw_text = extract_raw_text(file)
             new_file_texts[file.name] = raw_text
             extracted_records.append(parse_uploaded_file(file, raw_text))
+            if raw_text and embedder is not None:
+                new_doc_chunks.extend(embed_document(file.name, raw_text, embedder))
         st.session_state["file_texts"] = new_file_texts
+        st.session_state["doc_chunks"] = new_doc_chunks
         df = pd.DataFrame(extracted_records)
 
     n_with_text = sum(1 for t in st.session_state["file_texts"].values() if t)
@@ -338,16 +421,35 @@ if uploaded_files:
             f"⚠️ Could not extract readable text from {len(uploaded_files) - n_with_text} file(s) "
             "(e.g. scanned/image-only PDFs). The chatbot can only search text it could extract."
         )
+    if not EMBEDDINGS_AVAILABLE:
+        st.sidebar.warning(
+            "⚠️ `sentence-transformers` isn't installed, so semantic search is disabled. "
+            "Run `pip install sentence-transformers` to enable it."
+        )
 else:
     df = load_default_mock_data()
     st.session_state["file_texts"] = {}
+    st.session_state["doc_chunks"] = []
     st.sidebar.info("💡 Showing baseline dataset. Drop files above to parse.")
 
 st.sidebar.caption(
     "ℹ️ Rule codes, activity type, dates, and mitigation measures are simulated "
     "placeholder values for demo purposes. The chatbot below answers from the "
-    "**actual extracted text** of your uploaded files, not these placeholders."
+    "**actual extracted text** of your uploaded files (via local semantic search), "
+    "not these placeholders."
 )
+
+with st.sidebar.expander("⚙️ Local LLM settings"):
+    llm_model_path = st.text_input(
+        "GGUF model path",
+        value=DEFAULT_LLM_MODEL_PATH,
+        help="Path to a local GGUF model file for llama-cpp-python, e.g. a "
+             "quantized Llama 3 or Phi-3 instruct model downloaded from Hugging Face."
+    )
+    st.caption(
+        "No background app needed — the model loads directly into this process "
+        "the first time the chatbot is used."
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 2. Drop-Down Filters")
@@ -639,7 +741,7 @@ st.markdown(
 )
 
 # -----------------------------------------------------------------------------
-# 12. LOCAL DASHBOARD CHATBOT (Ollama - No API Key Needed)
+# 12. LOCAL DASHBOARD CHATBOT (llama-cpp-python + local semantic search)
 # -----------------------------------------------------------------------------
 st.markdown("---")
 st.subheader("💬 Ask the Dashboard Assistant")
@@ -647,7 +749,8 @@ st.subheader("💬 Ask the Dashboard Assistant")
 if st.session_state["file_texts"]:
     st.markdown(
         "Ask anything about the **currently loaded and filtered documents** — the assistant "
-        "searches the actual extracted text of your uploaded files."
+        "semantically searches the actual extracted text of your uploaded files and answers "
+        "from the most relevant passages."
     )
 else:
     st.markdown(
@@ -656,11 +759,23 @@ else:
         "their real content."
     )
 
-if not OLLAMA_AVAILABLE:
+missing_deps = []
+if not LLAMA_CPP_AVAILABLE:
+    missing_deps.append("`llama-cpp-python` (`pip install llama-cpp-python`)")
+if not EMBEDDINGS_AVAILABLE:
+    missing_deps.append("`sentence-transformers` (`pip install sentence-transformers`)")
+
+if missing_deps:
     st.warning(
-        "⚠️ The `ollama` Python package isn't installed, so the chatbot is disabled. "
-        "Run `pip install ollama` and make sure the Ollama app is running locally "
-        "(with a model such as `llama3` pulled) to enable it."
+        "⚠️ The chatbot is disabled because these packages aren't installed: "
+        + ", ".join(missing_deps)
+        + ". Both run fully locally — no API key or background app required."
+    )
+elif not os.path.exists(llm_model_path):
+    st.warning(
+        f"⚠️ No model file found at `{llm_model_path}`. Download a GGUF instruct model "
+        "(e.g. a quantized Llama 3 or Phi-3 model from Hugging Face) and set the correct "
+        "path in **⚙️ Local LLM settings** in the sidebar."
     )
 else:
     # Initialize chat history in session state
@@ -679,61 +794,60 @@ else:
         with st.chat_message("user"):
             st.markdown(user_prompt)
 
-        # Generate response using local Ollama
+        # Generate response using the local LLM
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
+                    embedder = load_embedding_model()
                     raw_text_context, structured_context = build_chat_context(
-                        filtered_df, st.session_state["file_texts"]
+                        user_prompt, filtered_df, st.session_state["doc_chunks"], embedder
                     )
 
                     if raw_text_context:
-                        system_prompt = f"""
-                        You are a helpful assistant for an air discharge consents dashboard.
-                        Answer the user's question using the information below, which reflects
-                        only what is currently visible on the dashboard (after filters/search).
+                        system_prompt = f"""You are a helpful assistant for an air discharge consents dashboard.
+Answer the user's question using the information below, which reflects only what is
+currently visible on the dashboard (after filters/search).
 
-                        1) RAW DOCUMENT TEXT extracted from the consent files currently shown:
-                        {raw_text_context}
+1) MOST RELEVANT DOCUMENT PASSAGES, retrieved by semantic search over the consent
+files currently shown:
+{raw_text_context}
 
-                        2) STRUCTURED SUMMARY of the records currently visible (note: fields like
-                        Industry_Type, AUP_E14_Rule, and dates in this summary are simulated demo
-                        placeholders, not parsed from the documents):
-                        {structured_context}
+2) STRUCTURED SUMMARY of the records currently visible (note: fields like
+Industry_Type, AUP_E14_Rule, and dates in this summary are simulated demo
+placeholders, not parsed from the documents):
+{structured_context}
 
-                        Prefer the RAW DOCUMENT TEXT for questions about specific wording, clauses,
-                        or conditions in the consents. Use the STRUCTURED SUMMARY only for questions
-                        about counts, statuses, or comparisons across the visible records, and make
-                        clear when you are relying on simulated fields. If the answer isn't in either,
-                        say you cannot find it in the currently loaded documents. Keep answers clear
-                        and direct.
-                        """
+Prefer the DOCUMENT PASSAGES for questions about specific wording, clauses, or
+conditions in the consents. Use the STRUCTURED SUMMARY only for questions about
+counts, statuses, or comparisons across the visible records, and make clear when
+you are relying on simulated fields. If the answer isn't in either, say you cannot
+find it in the currently loaded documents. Keep answers clear and direct."""
                     else:
-                        system_prompt = f"""
-                        You are a helpful assistant for an air discharge consents dashboard.
-                        No real document text is currently loaded (either no files were uploaded, or
-                        text could not be extracted from them). Answer using ONLY this structured
-                        summary of the data currently visible on the dashboard:
+                        system_prompt = f"""You are a helpful assistant for an air discharge consents dashboard.
+No real document text is currently loaded (either no files were uploaded, or text
+could not be extracted from them). Answer using ONLY this structured summary of the
+data currently visible on the dashboard:
 
-                        {structured_context}
+{structured_context}
 
-                        If the answer cannot be found in this data, say you cannot find it in the
-                        current view. Keep answers clear and direct.
-                        """
+If the answer cannot be found in this data, say you cannot find it in the current
+view. Keep answers clear and direct."""
 
-                    response = ollama.chat(
-                        model='llama3',
+                    llm = load_llm(llm_model_path)
+                    response = llm.create_chat_completion(
                         messages=[
-                            {'role': 'system', 'content': system_prompt},
-                            {'role': 'user', 'content': user_prompt}
-                        ]
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        max_tokens=512,
+                        temperature=0.2,
                     )
 
-                    assistant_reply = response['message']['content']
+                    assistant_reply = response["choices"][0]["message"]["content"]
                     st.markdown(assistant_reply)
 
                     st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
 
                 except Exception as e:
-                    error_msg = f"Could not connect to local Ollama. Make sure Ollama is running on your computer. Error: {e}"
+                    error_msg = f"Local model error: {e}"
                     st.error(error_msg)
