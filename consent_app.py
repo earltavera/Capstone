@@ -253,10 +253,8 @@ def parse_consent(lines) -> dict:
 
 
 def find_nztm(*line_lists):
-    """Find NZTM coordinates even if 'NZTM' label is missing or separated."""
-    text = flat([ln for ls in line_lists for ln in ls])
-    # Look for standard NZTM ranges: Easting 7 digits (1xxxxxx or 2xxxxxx), Northing 7 digits (5xxxxxx or 6xxxxxx)
-    m = re.search(r"\b([12]\d{6})\s*m?E?\s*[;,]?\s*([56]\d{6})\b", text)
+    """(easting, northing) if the PDFs print an NZTM reference, e.g. '1751734E; 5931450N'."""
+    m = re.search(r"NZTM[^0-9]{0,40}?(\d{7})\s*m?E?\s*[;,]?\s*(\d{7})", flat([ln for ls in line_lists for ln in ls]))
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
@@ -594,7 +592,7 @@ def build_pdf(df: pd.DataFrame, as_at: date) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
     story = [Paragraph("Air Discharge Consent Summary", styles["Title"]),
-             Paragraph(f"Status as of {as_at.day} {as_at:%B %Y} - {len(df)} consent(s). Conditions are from the consent PDFs; "
+             Paragraph(f"Status as at {as_at.day} {as_at:%B %Y} - {len(df)} consent(s). Conditions are from the consent PDFs; "
                        "everything else is from the memo PDFs.", styles["Normal"]), Spacer(1, 10)]
     head = ["Consent", "Applicant", "Site address", "Status", "Granted", "Expires", "Years (req.)", "Activity class", "Rules triggered", "Conditions"]
     data = [head]
