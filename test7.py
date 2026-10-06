@@ -1,5 +1,5 @@
 """
-Air Discharge Consent Analytics (Streamlit)
+Air Discharge Consent Analytics for Auckland Council (Streamlit)
 
 Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab
       streamlit run consent_app.py
