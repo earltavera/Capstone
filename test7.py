@@ -1,7 +1,7 @@
 """
 Air Discharge Consent Analytics (Streamlit)
 
-Run:  pip install streamlit pdfplumber pandas plotly pyproj
+Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab
       streamlit run consent_app.py
 
 Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs).
@@ -21,6 +21,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
+import io
 from collections import Counter
 from datetime import date, datetime, timedelta
 
@@ -546,10 +547,132 @@ def locate(row):
 AUCKLAND = {"lat": -36.85, "lon": 174.76}   # default map centre
 
 
+# ------------------------------------------------------------------ dashboard helpers
+def expiring_soon(df: pd.DataFrame, as_at: date, years: int) -> pd.DataFrame:
+    """Consents whose expiry falls between `as_at` and `years` years later."""
+    d = df[df.date_expiry.map(lambda x: isinstance(x, date))].copy()
+    limit = add_years(as_at, years)
+    d = d[(d.date_expiry >= as_at) & (d.date_expiry <= limit)]
+    d["days_left"] = d.date_expiry.map(lambda x: (x - as_at).days)
+    return d.sort_values("days_left")
+
+
+def shortfall(df: pd.DataFrame) -> pd.DataFrame:
+    """Consents where the memo states both years requested and years granted and fewer were granted."""
+    d = df[df.years_requested.notna() & df.years_granted.notna()].copy()
+    d = d[d.years_granted < d.years_requested]
+    d["short_by"] = d.years_requested - d.years_granted
+    return d.sort_values("short_by", ascending=False)
+
+
+def build_excel(df: pd.DataFrame) -> bytes:
+    """Workbook with the register, the triggered rules and every condition (needs openpyxl)."""
+    rules = pd.DataFrame([dict(consent_id=r.consent_id, **x) for r in df.itertuples() for x in r.rules])
+    conds = pd.DataFrame([dict(consent_id=r.consent_id, **x) for r in df.itertuples() for x in r.conditions])
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        for name, t in (("Register", register_view(df)), ("Triggered rules", rules.fillna(NOT_FOUND)), ("Conditions", conds)):
+            t.to_excel(xw, sheet_name=name, index=False)
+            ws = xw.sheets[name]
+            for col in ws.columns:
+                width = max((len(str(c.value)) for c in col[:60] if c.value is not None), default=8)
+                ws.column_dimensions[col[0].column_letter].width = min(width + 2, 60)
+            ws.freeze_panes = "A2"
+    return buf.getvalue()
+
+
+def build_pdf(df: pd.DataFrame, as_at: date) -> bytes:
+    """Landscape summary table of the register (needs reportlab)."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    styles = getSampleStyleSheet()
+    cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=7.5, leading=9)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    story = [Paragraph("Air Discharge Consent Summary", styles["Title"]),
+             Paragraph(f"Status as at {as_at.day} {as_at:%B %Y} - {len(df)} consent(s). Conditions are from the consent PDFs; "
+                       "everything else is from the memo PDFs.", styles["Normal"]), Spacer(1, 10)]
+    head = ["Consent", "Applicant", "Site address", "Status", "Granted", "Expires", "Years (req.)", "Activity class", "Rules triggered", "Conditions"]
+    data = [head]
+    for r in df.itertuples():
+        yrs = f"{_fmt(r.years_granted)} ({_fmt(r.years_requested)})"
+        data.append([Paragraph(str(x), cell) for x in (
+            r.consent_id, _fmt(r.applicant), _fmt(r.site_address), r.status, _fmt(r.date_granted), _fmt(r.date_expiry), yrs,
+            _fmt(r.activity_status), _fmt(r.rule_text or None), r.n_conditions)])
+    t = Table(data, repeatRows=1, colWidths=[62, 90, 105, 44, 62, 62, 52, 66, 190, 40])
+    style = [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f766e")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+             ("FONTSIZE", (0, 0), (-1, 0), 8), ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+             ("VALIGN", (0, 0), (-1, -1), "TOP"), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")])]
+    for k, st_ in enumerate(df.status, start=1):
+        style.append(("BACKGROUND", (3, k), (3, k), colors.HexColor({"Active": "#dcfce7", "Expired": "#fee2e2"}.get(st_, "#e5e7eb"))))
+    t.setStyle(TableStyle(style))
+    story.append(t)
+    doc.build(story)
+    return buf.getvalue()
+
+
 # ------------------------------------------------------------------ UI
-st.set_page_config(page_title="Air Discharge Consent Analytics", layout="wide")
-st.title("Air Discharge Consent Analytics")
-st.caption("Conditions come from the consent PDFs only; years granted, triggered rules and all other details come from the memo PDFs.")
+STATUS_COLOURS = {"Active": "#16a34a", "Expired": "#dc2626", NOT_FOUND: "#9ca3af"}
+PALETTE = ["#0f766e", "#2563eb", "#f59e0b", "#7c3aed", "#db2777", "#0891b2", "#64748b"]
+CSS = """
+<style>
+.block-container {padding-top: 1.4rem;}
+.hero {background: linear-gradient(120deg, #0f172a 0%, #0f766e 100%); color: #fff; padding: 26px 32px; border-radius: 18px; margin-bottom: 14px;}
+.hero h1 {color: #fff; margin: 0 0 4px 0; font-size: 2rem;}
+.hero p {color: #cbd5e1; margin: 0; font-size: 0.98rem;}
+.chip {display: inline-block; background: rgba(255,255,255,.14); color: #fff; padding: 3px 12px; border-radius: 999px; font-size: .8rem; margin: 10px 8px 0 0;}
+.kpi {border-radius: 16px; padding: 16px 18px; color: #fff; box-shadow: 0 4px 14px rgba(15,23,42,.18); min-height: 118px;}
+.kpi-icon {font-size: 1.4rem; opacity: .95;}
+.kpi-label {font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; opacity: .9; margin-top: 2px;}
+.kpi-value {font-size: 2rem; font-weight: 700; line-height: 1.15;}
+.kpi-note {font-size: .78rem; opacity: .85;}
+.badge {display: inline-block; padding: 2px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;}
+.b-active {background: #dcfce7; color: #166534;} .b-expired {background: #fee2e2; color: #991b1b;} .b-nf {background: #e5e7eb; color: #374151;}
+h2, h3, h4 {letter-spacing: -.01em;}
+</style>
+"""
+
+
+def badge(status: str) -> str:
+    cls = {"Active": "b-active", "Expired": "b-expired"}.get(status, "b-nf")
+    return f'<span class="badge {cls}">{status}</span>'
+
+
+def kpi(col, icon, label, value, note, c1, c2):
+    col.markdown(f'<div class="kpi" style="background:linear-gradient(135deg,{c1},{c2})"><div class="kpi-icon">{icon}</div>'
+                 f'<div class="kpi-label">{label}</div><div class="kpi-value">{value}</div><div class="kpi-note">{note}</div></div>',
+                 unsafe_allow_html=True)
+
+
+def show_fig(fig, title=None, height=340, container=st):
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=44 if title else 10, b=10), legend_title_text="",
+                      title=dict(text=title, font=dict(size=15)) if title else None)
+    container.plotly_chart(fig, width="stretch")
+
+
+def count_df(series: pd.Series, name="consents") -> pd.DataFrame:
+    return series.value_counts().rename_axis("name").reset_index(name=name)
+
+
+def status_style(v):
+    return {"Active": "background-color:#dcfce7;color:#166534;font-weight:600",
+            "Expired": "background-color:#fee2e2;color:#991b1b;font-weight:600"}.get(v, "")
+
+
+st.set_page_config(page_title="Air Discharge Consent Analytics", page_icon="🌫️", layout="wide")
+st.markdown(CSS, unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>🌫️ Air Discharge Consent Analytics</h1>'
+            '<p>Auckland Unitary Plan air discharge consents - read straight from the decision and memo PDFs.</p>'
+            '<span class="chip">Conditions: consent PDF</span><span class="chip">Years, rules, details: memo PDF</span>'
+            '<span class="chip">Nothing is guessed</span></div>', unsafe_allow_html=True)
+try:
+    import plotly.express as px
+except ImportError:
+    st.error("This dashboard needs plotly: run `pip install plotly` and restart the app.")
+    st.stop()
+
 files = st.file_uploader("Upload consent and memo PDFs (pairs are matched on the DIS number)", type="pdf", accept_multiple_files=True)
 if not files:
     st.info("Upload the consent and memo PDFs to begin. Nothing is kept between runs.")
@@ -562,95 +685,163 @@ rows = st.session_state["rows"]
 if not rows:
     st.stop()
 
+# ---- sidebar: status date + filters
+st.sidebar.header("Filters")
 as_at = st.sidebar.date_input("Status as at", date.today())
 df = pd.DataFrame(rows)
 df["status"] = df.date_expiry.map(lambda d: NOT_FOUND if d is None or pd.isna(d) else ("Active" if d >= as_at else "Expired"))
 df["expiry_year"] = df.date_expiry.map(lambda d: str(d.year) if isinstance(d, date) else NOT_FOUND)
+df["class_label"] = df.activity_status.fillna(NOT_FOUND)
+df["zone_label"] = df.air_quality_area.fillna(NOT_FOUND)
 with st.spinner("Locating consents on the map..."):
     loc_cache = st.session_state.setdefault("loc", {})
     for r in rows:
         loc_cache.setdefault(r["consent_id"], locate(r))
-df["lat"], df["lon"], df["location_basis"] = zip(*[loc_cache[i] for i in df.consent_id]) if len(df) else ([], [], [])
+df["lat"], df["lon"], df["location_basis"] = zip(*[loc_cache[i] for i in df.consent_id])
 show = lambda v: NOT_FOUND if v is None or (isinstance(v, float) and pd.isna(v)) else v
 
-c = st.columns(5)
-c[0].metric("Consents", len(df))
-c[1].metric("Active / expired", f"{(df.status == 'Active').sum()} / {(df.status == 'Expired').sum()}")
-c[2].metric("Avg years granted", f"{df.years_granted.mean():.1f}" if df.years_granted.notna().any() else NOT_FOUND)
-c[3].metric("Total conditions", int(df.n_conditions.sum()))
-c[4].metric("Avg conditions / consent", f"{df.n_conditions.mean():.1f}")
+f_status = st.sidebar.multiselect("Status", sorted(df.status.unique()), default=sorted(df.status.unique()))
+f_class = st.sidebar.multiselect("Activity class", sorted(df.class_label.unique()), default=sorted(df.class_label.unique()))
+f_zone = st.sidebar.multiselect("Air quality area", sorted(df.zone_label.unique()), default=sorted(df.zone_label.unique()))
+exp_years = [d.year for d in df.date_expiry if isinstance(d, date)]
+keep = df.status.isin(f_status) & df.class_label.isin(f_class) & df.zone_label.isin(f_zone)
+if exp_years and min(exp_years) < max(exp_years):
+    lo, hi = st.sidebar.slider("Expiry year", min(exp_years), max(exp_years), (min(exp_years), max(exp_years)))
+    keep &= df.date_expiry.map(lambda d: lo <= d.year <= hi if isinstance(d, date) else True)
+fdf = df[keep].reset_index(drop=True)
+st.sidebar.caption(f"Showing {len(fdf)} of {len(df)} consents. The chatbot always searches all {len(df)}.")
+if fdf.empty:
+    st.warning("No consent matches the sidebar filters.")
+    st.stop()
+rows_f = [r for r in rows if r["consent_id"] in set(fdf.consent_id)]
+
+st.sidebar.divider()
+st.sidebar.subheader("Export")
+try:
+    st.sidebar.download_button("⬇️ Excel summary", build_excel(fdf), "consent_summary.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+except ImportError:
+    st.sidebar.caption("For the Excel export run: pip install openpyxl")
+try:
+    st.sidebar.download_button("⬇️ PDF summary", build_pdf(fdf, as_at), "consent_summary.pdf", "application/pdf")
+except ImportError:
+    st.sidebar.caption("For the PDF export run: pip install reportlab")
+
+# ---- KPI cards
+k = st.columns(5)
+kpi(k[0], "📄", "Consents", len(fdf), f"of {len(df)} uploaded", "#0f766e", "#0e7490")
+kpi(k[1], "✅", "Active", int((fdf.status == "Active").sum()), f"as at {as_at:%d %b %Y}", "#15803d", "#16a34a")
+kpi(k[2], "⛔", "Expired", int((fdf.status == "Expired").sum()), "past expiry date", "#b91c1c", "#dc2626")
+kpi(k[3], "📅", "Avg years granted", f"{fdf.years_granted.mean():.1f}" if fdf.years_granted.notna().any() else NOT_FOUND, "from the memos", "#1d4ed8", "#2563eb")
+kpi(k[4], "📋", "Conditions", int(fdf.n_conditions.sum()), f"{fdf.n_conditions.mean():.1f} per consent", "#6d28d9", "#7c3aed")
+st.write("")
+
+# ---- insights
+i1, i2 = st.columns(2)
+with i1:
+    st.markdown("#### ⏳ Expiring soon")
+    horizon = st.slider("Look ahead (years)", 1, 20, 5)
+    soon = expiring_soon(fdf, as_at, horizon)
+    if soon.empty:
+        st.success(f"No consent expires within {horizon} year(s) of {as_at:%d %B %Y}.")
+    else:
+        st.warning(f"**{len(soon)}** consent(s) expire within {horizon} year(s):")
+        t = soon[["consent_id", "applicant", "date_expiry", "days_left"]].copy()
+        t["date_expiry"] = t.date_expiry.map(lambda d: d.isoformat())
+        st.dataframe(t.fillna(NOT_FOUND), width="stretch", hide_index=True)
+with i2:
+    st.markdown("#### ⚖️ Granted fewer years than requested")
+    sf = shortfall(fdf)
+    if sf.empty:
+        st.success("No consent was granted fewer years than requested (where both are stated in the memo).")
+    else:
+        st.warning(f"**{len(sf)}** consent(s) were granted fewer years than the applicant asked for:")
+        t = sf[["consent_id", "applicant", "years_requested", "years_granted", "short_by"]].fillna(NOT_FOUND)
+        st.dataframe(t, width="stretch", hide_index=True)
+    st.caption("Only consents where the memo states both the requested and the granted years.")
 
 # ---- Map (own section, above the tabs)
-st.subheader("Consent map")
-
-try:
-    import plotly.express as px
-except ImportError:
-    st.error("The map needs plotly: run `pip install plotly` and restart the app.")
-    px = None
-if px:
-    mdf = df[df.lat.notna()].copy()
-    if mdf.empty:
-        st.warning("No consent could be located: the PDFs print no NZTM reference and the address lookup found nothing "
-                   "(it needs an internet connection).")
-    else:
-        mdf["air_quality_zone"] = mdf.air_quality_area.fillna(NOT_FOUND)
-        mdf["site"] = mdf.site_address.fillna(NOT_FOUND)
-        fig = px.scatter_map(
-            mdf, lat="lat", lon="lon", color="status", hover_name="consent_id",
-            color_discrete_map={"Active": "#00CC96", "Expired": "#EF553B", NOT_FOUND: "#999999"},
-            hover_data={"site": True, "air_quality_zone": True, "status": True, "location_basis": True, "lat": False, "lon": False},
-            labels={"site": "Location", "air_quality_zone": "Air quality zone", "status": "Status", "location_basis": "Position from"},
-            center=AUCKLAND, zoom=9, height=560)
-        fig.update_traces(marker=dict(size=16))
-        fig.update_layout(map_style="carto-positron", margin={"r": 0, "t": 0, "l": 0, "b": 0})
-        st.plotly_chart(fig, width="stretch")
-        st.caption("Centred on Auckland (zoom out/in or drag to explore). Green = active, red = expired. Hover a dot for the location, status and air quality zone.")
-    miss = df[df.lat.isna()].consent_id.tolist()
-    if miss:
-        st.warning("Could not be placed on the map (no NZTM in the PDFs and no address match): " + ", ".join(miss))
+st.subheader("🗺️ Consent map")
+mdf = fdf[fdf.lat.notna()].copy()
+if mdf.empty:
+    st.warning("No consent could be located: the PDFs print no NZTM reference and the address lookup found nothing "
+               "(it needs an internet connection).")
+else:
+    mdf["air_quality_zone"] = mdf.air_quality_area.fillna(NOT_FOUND)
+    mdf["site"] = mdf.site_address.fillna(NOT_FOUND)
+    fig = px.scatter_map(
+        mdf, lat="lat", lon="lon", color="status", hover_name="consent_id", color_discrete_map=STATUS_COLOURS,
+        hover_data={"site": True, "air_quality_zone": True, "status": True, "location_basis": True, "lat": False, "lon": False},
+        labels={"site": "Location", "air_quality_zone": "Air quality zone", "status": "Status", "location_basis": "Position from"},
+        center=AUCKLAND, zoom=9, height=560)
+    fig.update_traces(marker=dict(size=16))
+    fig.update_layout(map_style="carto-positron", margin={"r": 0, "t": 0, "l": 0, "b": 0}, legend_title_text="")
+    st.plotly_chart(fig, width="stretch")
+    st.caption("Centred on Auckland (zoom out/in or drag to explore). Green = active, red = expired. Hover a dot for the location, status and air quality zone.")
+miss = fdf[fdf.lat.isna()].consent_id.tolist()
+if miss:
+    st.warning("Could not be placed on the map (no NZTM in the PDFs and no address match): " + ", ".join(miss))
 
 t_over, t_reg, t_rules, t_cond, t_det, t_dq = st.tabs(
-    ["Overview", "Register", "Triggered rules", "Conditions", "Consent summaries", "Data quality"])
+    ["📊 Overview", "📑 Register", "📐 Triggered rules", "📋 Conditions", "🗂️ Consent summaries", "🔎 Data quality"])
 
 with t_over:
+    tl = fdf.dropna(subset=["date_granted", "date_expiry"]).copy()
+    if not tl.empty:
+        tl["start"], tl["end"] = pd.to_datetime(tl.date_granted), pd.to_datetime(tl.date_expiry)
+        fig = px.timeline(tl, x_start="start", x_end="end", y="consent_id", color="status", color_discrete_map=STATUS_COLOURS,
+                          hover_data=["applicant"])
+        fig.update_yaxes(autorange="reversed", title=None)
+        fig.update_xaxes(title=None)
+        fig.add_shape(type="line", x0=str(as_at), x1=str(as_at), y0=0, y1=1, yref="paper", line=dict(color="#475569", dash="dash", width=2))
+        fig.add_annotation(x=str(as_at), y=1, yref="paper", text="Status date", showarrow=False, yshift=10, font=dict(color="#475569"))
+        show_fig(fig, "Consent timeline - grant to expiry", height=90 + 44 * len(tl))
     a, b = st.columns(2)
-    a.caption("Years of consent granted (memo)")
-    a.bar_chart(df.set_index("consent_id").years_granted)
-    b.caption("Number of conditions (consent)")
-    b.bar_chart(df.set_index("consent_id").n_conditions)
+    fig = px.bar(fdf, x="consent_id", y="years_granted", color="status", color_discrete_map=STATUS_COLOURS, text_auto=True)
+    fig.update_xaxes(title=None); fig.update_yaxes(title="years")
+    show_fig(fig, "Years of consent granted (memo)", container=a)
+    fig = px.bar(fdf, x="consent_id", y="n_conditions", color="status", color_discrete_map=STATUS_COLOURS, text_auto=True)
+    fig.update_xaxes(title=None); fig.update_yaxes(title="conditions")
+    show_fig(fig, "Number of conditions (consent)", container=b)
     a, b = st.columns(2)
-    a.caption("Years requested vs granted (memo)")
-    a.bar_chart(df.set_index("consent_id")[["years_requested", "years_granted"]])
-    b.caption("Consents by expiry year")
-    b.bar_chart(df.expiry_year.value_counts().sort_index())
+    long = fdf.melt(id_vars="consent_id", value_vars=["years_requested", "years_granted"], var_name="measure", value_name="years")
+    long["measure"] = long.measure.map({"years_requested": "Requested", "years_granted": "Granted"})
+    fig = px.bar(long, x="consent_id", y="years", color="measure", barmode="group", color_discrete_sequence=["#f59e0b", "#0f766e"])
+    fig.update_xaxes(title=None)
+    show_fig(fig, "Years requested vs granted (memo)", container=a)
+    ey = count_df(fdf.expiry_year).sort_values("name")
+    fig = px.bar(ey, x="name", y="consents", text_auto=True, color_discrete_sequence=[PALETTE[1]])
+    fig.update_xaxes(title="expiry year", type="category")
+    show_fig(fig, "Consents by expiry year", container=b)
     a, b = st.columns(2)
-    a.caption("Consents by overall activity status (memo)")
-    a.bar_chart(df.activity_status.fillna(NOT_FOUND).value_counts())
-    b.caption("Consents by air quality area (memo)")
-    b.bar_chart(df.air_quality_area.fillna(NOT_FOUND).value_counts())
-    d = df[["years_granted", "n_conditions", "rules_triggered"]].astype(float)
+    fig = px.pie(count_df(fdf.class_label), names="name", values="consents", hole=0.55, color_discrete_sequence=PALETTE)
+    show_fig(fig, "Overall activity status (memo)", container=a)
+    fig = px.pie(count_df(fdf.zone_label), names="name", values="consents", hole=0.55, color_discrete_sequence=PALETTE[2:] + PALETTE[:2])
+    show_fig(fig, "Air quality area (memo)", container=b)
+    d = fdf[["years_granted", "n_conditions", "rules_triggered"]].astype(float)
     if len(d) > 2 and d.nunique().min() > 1:
-        st.caption("Correlation between years granted, number of conditions and rules triggered")
-        st.dataframe(d.corr().round(2), width="stretch")
+        fig = px.imshow(d.corr().round(2), text_auto=True, color_continuous_scale="Teal", zmin=-1, zmax=1, aspect="auto")
+        show_fig(fig, "Correlation: years granted, conditions, rules triggered", height=300)
     else:
         st.caption("Correlations need at least three consents with varying values.")
 
 with t_reg:
-    reg = register_view(df)
-    st.dataframe(reg, width="stretch", hide_index=True)
+    reg = register_view(fdf)
+    st.dataframe(reg.style.map(status_style, subset=["status"]), width="stretch", hide_index=True)
     st.download_button("Download register CSV", reg.to_csv(index=False).encode(), "consent_register.csv", "text/csv")
 
 with t_rules:
-    rr = pd.DataFrame([dict(consent_id=r["consent_id"], **x) for r in rows for x in r["rules"]])
+    rr = pd.DataFrame([dict(consent_id=r["consent_id"], **x) for r in rows_f for x in r["rules"]])
     if rr.empty:
         st.info("No triggered rules were found in the memos.")
     else:
         a, b = st.columns(2)
-        a.caption("Triggered rules by activity class")
-        a.bar_chart(rr.activity_class.value_counts())
-        b.caption("Triggered rules by rule group")
-        b.bar_chart(rr.group.fillna("Group not stated in memo").value_counts())
+        fig = px.pie(count_df(rr.activity_class, "rules"), names="name", values="rules", hole=0.55, color_discrete_sequence=PALETTE)
+        show_fig(fig, "Triggered rules by activity class", container=a)
+        grp = count_df(rr.group.fillna("Group not stated in memo"), "rules")
+        fig = px.bar(grp, x="rules", y="name", orientation="h", text_auto=True, color_discrete_sequence=[PALETTE[0]])
+        fig.update_yaxes(title=None, autorange="reversed")
+        show_fig(fig, "Triggered rules by rule group", container=b)
         st.caption("Most frequently triggered rules")
         st.dataframe(rr.groupby(["rule", "description"]).consent_id.agg(["count", lambda s: ", ".join(s)])
                        .rename(columns={"count": "consents", "<lambda_0>": "consent ids"})
@@ -658,15 +849,23 @@ with t_rules:
         st.caption("All triggered rules")
         st.dataframe(rr.fillna(NOT_FOUND), width="stretch", hide_index=True)
 
-cc = pd.DataFrame([dict(consent_id=r["consent_id"], **x) for r in rows for x in r["conditions"]])
+cc = pd.DataFrame([dict(consent_id=r["consent_id"], **x) for r in rows_f for x in r["conditions"]])
 with t_cond:
     if cc.empty:
         st.info("No conditions were found in the consent PDFs.")
     else:
-        st.caption("Conditions by theme and consent (keyword-based grouping of the condition text)")
-        st.bar_chart(cc.pivot_table(index="consent_id", columns="theme", values="number", aggfunc="count", fill_value=0))
-        st.caption("Average condition length (words) by consent")
-        st.bar_chart(cc.assign(words=cc.text.str.split().str.len()).groupby("consent_id").words.mean().round(0))
+        by_theme = cc.groupby(["consent_id", "theme"]).size().reset_index(name="conditions")
+        fig = px.bar(by_theme, x="consent_id", y="conditions", color="theme", color_discrete_sequence=PALETTE + ["#a3a3a3"])
+        fig.update_xaxes(title=None)
+        show_fig(fig, "Conditions by theme (keyword-based grouping of the condition text)", height=380)
+        heat = cc.pivot_table(index="consent_id", columns="theme", values="number", aggfunc="count", fill_value=0)
+        fig = px.imshow(heat, text_auto=True, aspect="auto", color_continuous_scale="Teal", labels=dict(color="conditions"))
+        fig.update_xaxes(title=None, tickangle=-30); fig.update_yaxes(title=None)
+        show_fig(fig, "Heatmap: which themes each consent's conditions cover", height=120 + 40 * len(heat))
+        words = cc.assign(words=cc.text.str.split().str.len()).groupby("consent_id").words.mean().round(0).reset_index()
+        fig = px.bar(words, x="consent_id", y="words", text_auto=True, color_discrete_sequence=[PALETTE[3]])
+        fig.update_xaxes(title=None)
+        show_fig(fig, "Average condition length (words)")
         st.caption("All conditions")
         q = st.text_input("Filter conditions (text)")
         view = cc[cc.text.str.contains(q, case=False, regex=False)] if q else cc
@@ -674,11 +873,11 @@ with t_cond:
         st.download_button("Download conditions CSV", cc.to_csv(index=False).encode(), "consent_conditions.csv", "text/csv")
 
 with t_det:
-    fmt = lambda d: f"{d.day} {d:%B %Y}" if isinstance(d, date) else NOT_FOUND
-    for r, s in zip(df.to_dict("records"), df.status):
-        with st.expander(f"{r['consent_id']} - {show(r['applicant'])}", expanded=len(df) == 1):
-            info = summary_table({**r, "status": s})
-            st.dataframe(info, width="stretch", hide_index=True)
+    for r, s in zip(fdf.to_dict("records"), fdf.status):
+        dot = {"Active": "🟢", "Expired": "🔴"}.get(s, "⚪")
+        with st.expander(f"{dot} {r['consent_id']} - {show(r['applicant'])}", expanded=len(fdf) == 1):
+            st.markdown(badge(s), unsafe_allow_html=True)
+            st.dataframe(summary_table({**r, "status": s}), width="stretch", hide_index=True)
             if r["rules"]:
                 st.markdown("**Rules that trigger consent (memo)**")
                 st.dataframe(pd.DataFrame(r["rules"]).rename(columns={"rule": "Rule", "group": "Rule group", "description": "Description",
@@ -701,7 +900,7 @@ with t_dq:
 
 # ---- Chatbot (own section, below the tabs)
 st.divider()
-st.subheader("Consent chatbot")
+st.subheader("💬 Consent chatbot")
 st.caption("Ask about anything in the Register or Consent summaries tabs, e.g. *tell me about DIS60308433*, *who is the specialist for DIS60361208*, "
            "*which consents are active*, *anything in Henderson*, *more than 15 years*, *what does rule A54 mean*, "
            "*conditions about odour for DIS60316131*, *average years granted*. "
