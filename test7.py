@@ -594,7 +594,7 @@ def build_pdf(df: pd.DataFrame, as_at: date) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
     story = [Paragraph("Air Discharge Consent Summary", styles["Title"]),
-             Paragraph(f"Status as at {as_at.day} {as_at:%B %Y} - {len(df)} consent(s). Conditions are from the consent PDFs; "
+             Paragraph(f"Status as of {as_at.day} {as_at:%B %Y} - {len(df)} consent(s). Conditions are from the consent PDFs; "
                        "everything else is from the memo PDFs.", styles["Normal"]), Spacer(1, 10)]
     head = ["Consent", "Applicant", "Site address", "Status", "Granted", "Expires", "Years (req.)", "Activity class", "Rules triggered", "Conditions"]
     data = [head]
