@@ -592,7 +592,7 @@ def build_pdf(df: pd.DataFrame, as_at: date) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
     story = [Paragraph("Air Discharge Consent Summary", styles["Title"]),
-             Paragraph(f"Status as at {as_at.day} {as_at:%B %Y} - {len(df)} consent(s). Conditions are from the consent PDFs; "
+             Paragraph(f"Status as of {as_at.day} {as_at:%B %Y} - {len(df)} consent(s). Conditions are from the consent PDFs; "
                        "everything else is from the memo PDFs.", styles["Normal"]), Spacer(1, 10)]
     head = ["Consent", "Applicant", "Site address", "Status", "Granted", "Expires", "Years (req.)", "Activity class", "Rules triggered", "Conditions"]
     data = [head]
@@ -769,7 +769,7 @@ if not rows:
 
 # ---- sidebar: status date + filters
 st.sidebar.header("Filters")
-as_at = st.sidebar.date_input("Status as at", date.today())
+as_at = st.sidebar.date_input("Status as of", date.today())
 df = pd.DataFrame(rows)
 df["status"] = df.date_expiry.map(lambda d: NOT_FOUND if d is None or pd.isna(d) else ("Active" if d >= as_at else "Expired"))
 df["expiry_year"] = df.date_expiry.map(lambda d: str(d.year) if isinstance(d, date) else NOT_FOUND)
@@ -812,7 +812,7 @@ except ImportError:
 # ---- KPI cards
 k = st.columns(5)
 kpi(k[0], "📄", "Consents", len(fdf), f"of {len(df)} uploaded", "#0f766e", "#0e7490")
-kpi(k[1], "✅", "Active", int((fdf.status == "Active").sum()), f"as at {as_at:%d %b %Y}", "#15803d", "#16a34a")
+kpi(k[1], "✅", "Active", int((fdf.status == "Active").sum()), f"as of {as_at:%d %b %Y}", "#15803d", "#16a34a")
 kpi(k[2], "⛔", "Expired", int((fdf.status == "Expired").sum()), "past expiry date", "#b91c1c", "#dc2626")
 kpi(k[3], "📅", "Avg years granted", f"{fdf.years_granted.mean():.1f}" if fdf.years_granted.notna().any() else NOT_FOUND, "from the memos", "#1d4ed8", "#2563eb")
 kpi(k[4], "📋", "Conditions", int(fdf.n_conditions.sum()), f"{fdf.n_conditions.mean():.1f} per consent", "#6d28d9", "#7c3aed")
