@@ -666,14 +666,89 @@ def status_style(v):
             "Expired": "background-color:#fee2e2;color:#991b1b;font-weight:600"}.get(v, "")
 
 
+# ------------------------------------------------------------------ header: time, location, weather
+HDR_LAT, HDR_LON, HDR_CITY, HDR_TZ = -36.8485, 174.7633, "Auckland, NZ", "Pacific/Auckland"
+WMO = {0: ("Clear", "☀️"), 1: ("Mostly clear", "🌤️"), 2: ("Partly cloudy", "⛅"), 3: ("Overcast", "☁️"),
+       45: ("Fog", "🌫️"), 48: ("Fog", "🌫️"), 51: ("Drizzle", "🌦️"), 53: ("Drizzle", "🌦️"), 55: ("Drizzle", "🌦️"),
+       61: ("Rain", "🌧️"), 63: ("Rain", "🌧️"), 65: ("Heavy rain", "🌧️"), 80: ("Showers", "🌦️"),
+       81: ("Showers", "🌦️"), 82: ("Heavy showers", "⛈️"), 95: ("Thunderstorm", "⛈️"),
+       96: ("Thunderstorm", "⛈️"), 99: ("Thunderstorm", "⛈️")}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_weather():
+    """Current Auckland weather from Open-Meteo (free, no key). Returns (icon, temp, label, wind); placeholders if offline."""
+    try:
+        url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&timezone=%s"
+               "&current=temperature_2m,weather_code,wind_speed_10m" % (HDR_LAT, HDR_LON, urllib.parse.quote(HDR_TZ)))
+        with urllib.request.urlopen(url, timeout=5) as r:
+            cur = json.load(r)["current"]
+        label, icon = WMO.get(cur["weather_code"], ("Weather", "🌡️"))
+        return icon, f'{round(cur["temperature_2m"])}°C', label, f'{round(cur["wind_speed_10m"])} km/h'
+    except Exception:
+        return "🌡️", "--", "Weather unavailable", ""
+
+
+def render_header():
+    """Hero banner: logo + title on the left; live clock, location and weather on the right."""
+    import streamlit.components.v1 as components
+    icon, temp, label, wind = get_weather()
+    wind_txt = f" · 💨 {wind}" if wind else ""
+    html = f"""
+    <style>
+      body {{ margin:0; font-family:"Source Sans Pro", "Source Sans 3", sans-serif; }}
+      .hero {{ background:linear-gradient(120deg,#0f172a 0%,#0f766e 100%); color:#fff; padding:26px 32px;
+               border-radius:18px; box-sizing:border-box; display:flex; align-items:center;
+               justify-content:space-between; gap:24px; }}
+      .main {{ min-width:0; }}
+      .left {{ display:flex; align-items:center; gap:22px; min-width:0; }}
+      .logo {{ height:84px; background:#fff; border-radius:14px; padding:7px 10px; flex:none; }}
+      h1 {{ margin:0 0 4px 0; font-size:2rem; }}
+      .sub {{ margin:0; color:#cbd5e1; font-size:.98rem; }}
+      .right {{ text-align:right; background:rgba(255,255,255,.12); border-radius:16px; padding:12px 20px;
+                min-width:215px; flex:none; }}
+      .time {{ font-size:2rem; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }}
+      .date {{ color:#cbd5e1; font-size:.85rem; margin-bottom:8px; }}
+      .loc {{ font-size:.92rem; }}
+      .wx {{ font-size:1rem; margin-top:3px; }}
+      .chip {{ display:inline-block; background:rgba(255,255,255,.14); color:#fff; padding:3px 12px;
+               border-radius:999px; font-size:.8rem; margin:10px 8px 0 0; }}
+      @media (max-width:760px) {{ .hero {{ flex-direction:column; align-items:flex-start; }} .right {{ text-align:left; }} }}
+    </style>
+    <div class="hero">
+      <div class="main">
+        <div class="left">
+          <img class="logo" src="data:image/png;base64,{LOGO_B64}" alt="Auckland Council">
+          <div><h1>Air Discharge Consent Analytics</h1>
+          <p class="sub">Auckland Unitary Plan air discharge consents - read straight from the decision and memo PDFs.</p></div>
+        </div>
+        <span class="chip">Conditions: consent PDF</span><span class="chip">Years, rules, details: memo PDF</span>
+        <span class="chip">Nothing is guessed</span>
+      </div>
+      <div class="right">
+        <div class="time" id="t">--:--:-- --</div>
+        <div class="date" id="d"></div>
+        <div class="loc">📍 {HDR_CITY}</div>
+        <div class="wx">{icon} {temp} · {label}{wind_txt}</div>
+      </div>
+    </div>
+    <script>
+      function tick() {{
+        const n = new Date();
+        document.getElementById('t').textContent = n.toLocaleTimeString('en-NZ',
+          {{timeZone:'{HDR_TZ}', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}}).toUpperCase();
+        document.getElementById('d').textContent = n.toLocaleDateString('en-NZ',
+          {{timeZone:'{HDR_TZ}', weekday:'long', day:'numeric', month:'long'}});
+      }}
+      tick(); setInterval(tick, 1000);
+    </script>
+    """
+    components.html(html, height=210)
+
+
 st.set_page_config(page_title="Air Discharge Consent Analytics", page_icon=None, layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
-st.markdown('<div class="hero"><div class="hero-row">'
-            '<img class="hero-logo" src="data:image/png;base64,' + LOGO_B64 + '" alt="Auckland Council">'
-            '<div><h1>Air Discharge Consent Analytics</h1>'
-            '<p>Auckland Unitary Plan air discharge consents - read straight from the decision and memo PDFs.</p></div></div>'
-            '<span class="chip">Conditions: consent PDF</span><span class="chip">Years, rules, details: memo PDF</span>'
-            '<span class="chip">Nothing is guessed</span></div>', unsafe_allow_html=True)
+render_header()
 try:
     import plotly.express as px
 except ImportError:
