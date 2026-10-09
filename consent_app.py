@@ -5,8 +5,9 @@ Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab
       streamlit run consent_app.py
 
 Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs).
-Nothing is cached between runs and nothing is looked up online - a value that is not in the
-uploaded PDFs is reported as "Not found" (and listed on the Data quality tab), never guessed.
+Nothing is cached between runs. A value that is not in the uploaded PDFs is reported as "Not found"
+(and listed on the Data quality tab), never guessed. The only online call is the map: when the PDFs print
+no NZTM reference, the memo's site address is looked up on OpenStreetMap.
 
 Sources
   * Consent PDF only  -> every condition (grouped under the consent's own headings), the
@@ -272,6 +273,11 @@ def build_row(cid, consent_lines, memo_lines) -> dict:
     classes = [r["activity_class"] for r in rules if r["activity_class"] in CLASS_RANK]
     overall = max(classes, key=CLASS_RANK.get) if classes else None
     conds = c["conditions"]
+    for r_ in rules:                                               # discharge type of every triggered rule (keyword-based)
+        r_["discharge_type"] = classify_discharge(f"{r_.get('group') or ''} {r_['description']}")
+    dtypes = [r_["discharge_type"] for r_ in rules]
+    for c_ in conds:                                               # mitigation measures each condition requires (keyword-based)
+        c_["mitigation"] = "; ".join(mitigation_in(c_["text"]))
     missing = [k for k, v in {
         "consent PDF": bool(consent_lines), "memo PDF": bool(memo_lines), "years granted (memo)": years,
         "triggered rules (memo)": rules, "conditions (consent)": conds, "grant date (consent)": granted,
@@ -286,6 +292,8 @@ def build_row(cid, consent_lines, memo_lines) -> dict:
         rule_groups="; ".join(dict.fromkeys(r["group"] for r in rules if r["group"])),
         n_conditions=len(conds), conditions=conds, ghg_site_total=m.get("ghg_site_total"),
         specialist=m.get("specialist"), nztm=find_nztm(consent_lines or [], memo_lines or []), missing=missing,
+        discharge_types=list(dict.fromkeys(dtypes)), discharge_primary=Counter(dtypes).most_common(1)[0][0] if dtypes else None,
+        mitigation=sorted({x for c_ in conds for x in c_["mitigation"].split("; ") if x}),
     )
 
 
@@ -310,6 +318,51 @@ def analyse(files) -> list[dict]:
     bar.progress(1.0)
     note.text(f"Done - {len(files)} file(s), {len(rows)} consent(s).")
     return rows
+
+
+# ------------------------------------------------------------------ discharge types & mitigation measures
+# Keyword lists (edit freely). A rule / condition goes to the entry with the most keyword hits; ties go to the earlier entry.
+DISCHARGE_TYPES = [
+    ("Fuel combustion (boilers, heaters, generators)", r"combust|boiler|burner|fuel|heater|generator|process heat|furnace|diesel|coal|biomass"),
+    ("Spray painting & coating", r"spray|paint|coating|lacquer|powder coat"),
+    ("Metal processing & foundries", r"foundr|smelt|metal|galvani|anodis|steel|alumin|casting|forging|welding"),
+    ("Asphalt, concrete & quarrying", r"asphalt|concrete|cement|quarr|aggregate|crush|bitumen"),
+    ("Wood & fibre processing", r"timber|wood|sawmill|particle ?board|mdf|fibre|sanding|kiln"),
+    ("Food, rendering & odour industries", r"food|render|meat|fish|bakery|brew|coffee|roast|smok|abattoir|dairy|tallow"),
+    ("Chemical, plastics & fibreglass", r"chemical|plastic|resin|fibreglass|solvent|styrene|polymer|fertili[sz]|pharmaceut"),
+    ("Waste, composting & incineration", r"waste|compost|incinerat|crematori|landfill|biosolid|sewage|wastewater"),
+    ("Storage, handling & abrasive blasting", r"storage|handling|bulk|silo|abrasive|blasting|grain|stockpile|loading"),
+]
+OTHER_DISCHARGE = "Other / not classified"
+DISCHARGE_LABELS = [n for n, _ in DISCHARGE_TYPES] + [OTHER_DISCHARGE]
+
+MITIGATION_MEASURES = [
+    ("Fabric filter / baghouse", r"baghouse|bag house|fabric filter|bag filter"),
+    ("Cyclone / dust collector", r"cyclone|dust collector|dust extraction"),
+    ("Wet scrubber", r"scrubber"),
+    ("Afterburner / thermal oxidiser", r"afterburner|thermal oxidi[sz]er"),
+    ("Carbon filter / biofilter / odour control", r"activated carbon|carbon filter|biofilter|odour control|odour abatement"),
+    ("Stack / discharge point requirements", r"discharged? (?:through|via|from|to) (?:a |the )?(?:stack|vent|flue)|stack height|height of the stack|metres above|discharge point|\bflue\b"),
+    ("Enclosure, hooding & extraction", r"enclos|extraction system|ducting|hood|capture"),
+    ("Management plan", r"management plan|\bAQMP\b|emissions? plan"),
+    ("Monitoring & testing", r"monitor|stack test|emission test|sampl|opacity|detector|measurement"),
+    ("Fuel type / quality restriction", r"fuel (?:type|quality|sulphur)|sulphur content|natural gas|\blpg\b|untreated wood|only (?:burn|use)"),
+    ("Operating hours / throughput limit", r"hours of operation|operating hours|throughput|maximum (?:rate|quantity|capacity)"),
+    ("Maintenance & inspection", r"maintain|maintenance|inspect|servic"),
+    ("Water suppression / dust control", r"water (?:spray|suppress|cart)|sprinkler|dampen|wetting|sealed|stabilis"),
+    ("Complaint & incident response", r"complaint|incident|breakdown|upset"),
+]
+MIT_LABELS = [n for n, _ in MITIGATION_MEASURES]
+
+
+def classify_discharge(text: str) -> str:
+    scores = [(len(re.findall(p, text or "", re.I)), -i, name) for i, (name, p) in enumerate(DISCHARGE_TYPES)]
+    best = max(scores)
+    return best[2] if best[0] > 0 else OTHER_DISCHARGE
+
+
+def mitigation_in(text: str) -> list[str]:
+    return [name for name, p in MITIGATION_MEASURES if re.search(p, text or "", re.I)]
 
 
 # ------------------------------------------------------------------ register chatbot
@@ -370,6 +423,8 @@ def summary_table(r: dict) -> pd.DataFrame:
         ("Air quality area (memo)", _fmt(r["air_quality_area"])),
         ("Overall activity status (memo)", _fmt(r["activity_status"])),
         ("Rules that trigger consent (memo)", _fmt(r["rule_text"] or None)),
+        ("Discharge type (keyword-based)", _fmt("; ".join(r["discharge_types"]) or None)),
+        ("Mitigation measures in conditions (keyword-based)", _fmt("; ".join(r["mitigation"]) or None)),
         ("Number of conditions (consent)", str(r["n_conditions"])),
         ("GHG site total, t CO2e/yr (memo)", _fmt(r["ghg_site_total"])),
         ("Specialist (memo)", _fmt(r["specialist"])),
@@ -864,8 +919,9 @@ miss = fdf[fdf.lat.isna()].consent_id.tolist()
 if miss:
     st.warning("Could not be placed on the map (no NZTM in the PDFs and no address match): " + ", ".join(miss))
 
-t_over, t_reg, t_rules, t_cond, t_det, t_dq = st.tabs(
-    ["📊 Overview", "📑 Register", "📐 Triggered rules", "📋 Conditions", "🗂️ Consent summaries", "🔎 Data quality"])
+t_over, t_reg, t_rules, t_mit, t_cond, t_det, t_dq = st.tabs(
+    ["📊 Overview", "📑 Register", "📐 Triggered rules", "🏭 Discharges & mitigation", "📋 Conditions",
+     "🗂️ Consent summaries", "🔎 Data quality"])
 
 with t_over:
     tl = fdf.dropna(subset=["date_granted", "date_expiry"]).copy()
@@ -900,6 +956,23 @@ with t_over:
     show_fig(fig, "Overall activity status (memo)", container=a)
     fig = px.pie(count_df(fdf.zone_label), names="name", values="consents", hole=0.55, color_discrete_sequence=PALETTE[2:] + PALETTE[:2])
     show_fig(fig, "Air quality area (memo)", container=b)
+    # ---- distribution of consent terms (1-30 years)
+    dur = fdf.dropna(subset=["years_granted"]).copy()
+    if dur.empty:
+        st.caption("No consent term was found in the memos, so there is no duration distribution.")
+    else:
+        bands = ["1-5", "6-10", "11-15", "16-20", "21-25", "26-30", "30+"]
+        dur["term_band"] = pd.cut(dur.years_granted, [0, 5, 10, 15, 20, 25, 30, float("inf")], labels=bands).astype(str)
+        hist = dur.groupby(["term_band", "class_label"]).size().reset_index(name="consents")
+        a, b = st.columns(2)
+        fig = px.bar(hist, x="term_band", y="consents", color="class_label", text_auto=True, color_discrete_sequence=PALETTE,
+                     category_orders={"term_band": bands})
+        fig.update_xaxes(title="years granted")
+        show_fig(fig, "Distribution of consent terms by activity class", container=a)
+        stats = dur.groupby("class_label").years_granted.agg(consents="count", min="min", median="median", mean="mean", max="max").round(1)
+        b.markdown("**Consent term (years) by activity class**")
+        b.dataframe(stats.reset_index().rename(columns={"class_label": "activity class"}), width="stretch", hide_index=True)
+        b.caption("Terms come from the memos. Bands: 1-5, 6-10, ... 26-30 years.")
     d = fdf[["years_granted", "n_conditions", "rules_triggered"]].astype(float)
     if len(d) > 2 and d.nunique().min() > 1:
         fig = px.imshow(d.corr().round(2), text_auto=True, color_continuous_scale="Teal", zmin=-1, zmax=1, aspect="auto")
@@ -954,6 +1027,63 @@ with t_cond:
         st.dataframe(view, width="stretch", hide_index=True)
         st.download_button("Download conditions CSV", cc.to_csv(index=False).encode(), "consent_conditions.csv", "text/csv")
 
+with t_mit:
+    st.caption("Discharge types and mitigation measures are grouped with keyword lists (DISCHARGE_TYPES and MITIGATION_MEASURES near the "
+               "top of this file - edit them to suit).")
+    rr = pd.DataFrame([dict(consent_id=r["consent_id"], years_granted=r["years_granted"], **x) for r in rows_f for x in r["rules"]])
+    st.markdown("#### Consented industrial air discharges")
+    if rr.empty:
+        st.info("No triggered rules were found in the memos, so discharges cannot be categorised.")
+    else:
+        per_type = rr.groupby("discharge_type").agg(consents=("consent_id", "nunique"), rules=("rule", "count"),
+                                                    avg_years_granted=("years_granted", "mean")).round(1).reset_index()
+        per_type = per_type.sort_values(["consents", "rules"], ascending=False)
+        a, b = st.columns(2)
+        fig = px.bar(per_type, x="consents", y="discharge_type", orientation="h", text_auto=True, color_discrete_sequence=[PALETTE[0]])
+        fig.update_yaxes(title=None, autorange="reversed")
+        show_fig(fig, "Consents by discharge type", container=a)
+        by_cls = rr.groupby(["discharge_type", "activity_class"]).size().reset_index(name="rules")
+        fig = px.bar(by_cls, x="rules", y="discharge_type", color="activity_class", orientation="h", text_auto=True,
+                     color_discrete_sequence=PALETTE)
+        fig.update_yaxes(title=None, autorange="reversed")
+        show_fig(fig, "Triggered rules by discharge type and activity class", container=b)
+        st.dataframe(per_type.rename(columns={"discharge_type": "discharge type", "avg_years_granted": "avg years granted"}),
+                     width="stretch", hide_index=True)
+        other = rr[rr.discharge_type == OTHER_DISCHARGE]
+        if not other.empty:
+            with st.expander(f"{len(other)} rule(s) not classified - add keywords for them to DISCHARGE_TYPES"):
+                st.dataframe(other[["consent_id", "rule", "group", "description"]].fillna(NOT_FOUND), width="stretch", hide_index=True)
+
+    st.markdown("#### Primary mitigation measures (from the consent conditions)")
+    mm = pd.DataFrame([dict(consent_id=r["consent_id"], measure=m, discharge_type=t)
+                       for r in rows_f for m in r["mitigation"] for t in (r["discharge_types"] or [NOT_FOUND])])
+    if mm.empty:
+        st.info("No mitigation measures were recognised in the conditions.")
+    else:
+        n_cons = len(rows_f)
+        cond_n = cc.assign(measure=cc.mitigation.str.split("; ")).explode("measure")
+        cond_n = cond_n[cond_n.measure.fillna("") != ""].groupby("measure").size().rename("conditions")
+        example = cc.assign(measure=cc.mitigation.str.split("; ")).explode("measure")
+        example = example[example.measure.fillna("") != ""].groupby("measure").text.first().str.slice(0, 160).rename("example condition")
+        rank = (mm.drop_duplicates(["consent_id", "measure"]).groupby("measure").consent_id
+                  .agg(consents="nunique", consent_ids=lambda s: ", ".join(sorted(s))))
+        rank = rank.join(cond_n).join(example)
+        rank["% of consents"] = (100 * rank.consents / n_cons).round(0)
+        rank = rank.sort_values(["consents", "conditions"], ascending=False).reset_index()
+        a, b = st.columns(2)
+        fig = px.bar(rank, x="consents", y="measure", orientation="h", text_auto=True, color_discrete_sequence=[PALETTE[1]])
+        fig.update_yaxes(title=None, autorange="reversed")
+        show_fig(fig, f"Consents requiring each measure (of {n_cons})", container=a, height=max(300, 34 * len(rank) + 60))
+        heat = mm.drop_duplicates(["consent_id", "measure", "discharge_type"]).pivot_table(
+            index="measure", columns="discharge_type", values="consent_id", aggfunc="nunique", fill_value=0)
+        fig = px.imshow(heat, text_auto=True, aspect="auto", color_continuous_scale="Teal", labels=dict(color="consents"))
+        fig.update_xaxes(title=None, tickangle=-30); fig.update_yaxes(title=None)
+        show_fig(fig, "Measures by discharge type", container=b, height=max(300, 34 * len(heat) + 120))
+        st.dataframe(rank[["measure", "consents", "% of consents", "conditions", "consent_ids", "example condition"]],
+                     width="stretch", hide_index=True)
+        st.download_button("Download mitigation ranking CSV", rank.to_csv(index=False).encode(), "mitigation_measures.csv", "text/csv")
+        st.caption("Keyword-based: a measure is counted when a condition mentions it, not when its wording is judged.")
+
 with t_det:
     for r, s in zip(fdf.to_dict("records"), fdf.status):
         dot = {"Active": "🟢", "Expired": "🔴"}.get(s, "⚪")
@@ -963,7 +1093,7 @@ with t_det:
             if r["rules"]:
                 st.markdown("**Rules that trigger consent (memo)**")
                 st.dataframe(pd.DataFrame(r["rules"]).rename(columns={"rule": "Rule", "group": "Rule group", "description": "Description",
-                                                                      "activity_class": "Activity class"}).fillna(NOT_FOUND),
+                                                                      "activity_class": "Activity class", "discharge_type": "Discharge type"}).fillna(NOT_FOUND),
                              width="stretch", hide_index=True)
             st.markdown(f"**Conditions ({r['n_conditions']}, from the consent)**")
             cur = None
