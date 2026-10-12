@@ -53,7 +53,9 @@ OTHER_THEME = "General compliance"
 # ------------------------------------------------------------------ PDF text
 FOOTER = re.compile(
     r"^(?:DIS\d{8}.*Page \d+|Page \d+(?: of \d+)?(?:\s+DIS\d{8})?|Consent:.*|Address:.*|"
-    r"Air (?:quality|discharge) review.*|BUN\d+.*Air discharge.*|.*\(Air discharge:.*\)\s*\d*)\s*$")
+    r"Air (?:quality|discharge) review.*|BUN\d+.*Air discharge.*|.*\(Air discharge:.*\)\s*\d*|"
+    r"DIS\d{8}\s*:?\s*Air (?:quality|discharge) review(?: memo)?\s*\d*|DIS\d{8}\s+\d{1,3}|"
+    r"Page ?\d+ of \d+\s*DIS\d{8}|Condition # .*|[A-Z][A-Za-z ]+ v Auckland Council)\s*$")
 
 
 def read_pdf(file) -> list[str]:
@@ -168,7 +170,49 @@ def triggered_rules(lines) -> list[dict]:
     return rules
 
 
+_UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+                                     "fifteen sixteen seventeen eighteen nineteen".split())}
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50}
+_W = "|".join(sorted({*_UNITS, *_TENS} - {"zero"}, key=len, reverse=True))
+NUM = rf"(?:\d+(?:\.\d+)?|(?:{_W})(?:[- ]?(?:{_W}))?)"          # 15 / 18.5 / fifteen / thirty-five
+
+
+def num_val(s):
+    s = s.lower().strip()
+    try:
+        return float(s)
+    except ValueError:
+        return float(sum({**_UNITS, **_TENS}[t] for t in re.split(r"[- ]+", s) if t))
+
+
 def memo_duration(lines):
+    """(years granted, years requested): the 'Duration of consent' section if the memo has numbered headings,
+    otherwise sentences found anywhere in the memo (unnumbered headings, number words, 'a 35-year term')."""
+    g, r = _memo_duration_section(lines)
+    if g is not None and r is not None:
+        return g, r
+    txt = re.sub(r"(?<=[a-z])- (?=[a-z])", "-", flat(lines))
+    for sent in re.split(r"(?<=[.!?])\s+(?=[A-Z\u2022])", txt):
+        if not re.search(r"year", sent, re.I):
+            continue
+        for clause in re.split(r"[;,]|\bbut\b|\bwhereas\b|\bhowever\b", sent):
+            c = clause.lower()
+            if re.search(r"request|applied for|seeks?|seeking|sought", c):
+                m = re.search(rf"(?:request\w*|applied for|seeks?|seeking|sought)\s+(?:an?\s+|for\s+(?:an?\s+)?)?(?:consent\s+)?(?:term\s+of\s+)?(?:at least\s+)?({NUM})[ -]?years?", c)
+                if m and r is None:
+                    r = num_val(m.group(1))
+                continue
+            if g is None and re.search(r"\bterm\b|duration", c) and not re.search(r"previous|expired|existing|current|former|too long|\bwould\b|typically", c):
+                for pat in (rf"term of (?:approx\w*\.?\s*)?({NUM})[ -]?years?", rf"duration of (?:approx\w*\.?\s*)?({NUM})[ -]?years?",
+                            rf"({NUM})[ -]?years?\s+(?:consent\s+)?(?:term|duration)", rf"approx\w*\.?\s*({NUM})[ -]?years?"):
+                    m = re.search(pat, c)
+                    if m:
+                        g = num_val(m.group(1))
+                        break
+    return g, r
+
+
+def _memo_duration_section(lines):
     """(years granted, years requested) from the memo's 'Duration of consent' section."""
     txt = flat(section(lines, r"duration"))
     granted = None
@@ -181,6 +225,45 @@ def memo_duration(lines):
             break
     r = re.search(r"requested an? (\d+(?:\.\d+)?)[ -]year", txt) or re.search(r"term of consent of at least (\d+(?:\.\d+)?) years", txt)
     return granted, float(r.group(1)) if r else None
+
+
+CLASS_PAT = r"(Controlled|Restricted discretionary|Discretionary|Non-complying|Prohibited|Permitted)"
+
+
+def fallback_rules(lines) -> list[dict]:
+    """Memos with no 'Reason for application' section state the rule in the introduction:
+    '... is a Discretionary activity pursuant to Rule E14.4.1(A2).'"""
+    out, seen = [], set()
+    for sent in re.split(r"(?<=[.!?])\s+(?=[A-Z\u2022])", flat(lines)):
+        for m in re.finditer(rf"{CLASS_PAT}\s+activity\s+(?:pursuant to|under|in terms of)\s+(?:Rule\s+)?E14\.4\.1\s*\(?(A\d{{1,3}})\)?", sent, re.I):
+            if m.group(2).upper() in seen:
+                continue
+            seen.add(m.group(2).upper())
+            desc = re.split(r"\s+(?:is|are|will be|would be)\s+an?\s+" + CLASS_PAT, sent, flags=re.I)[0]
+            out.append(dict(rule=f"E14.4.1 ({m.group(2).upper()})", group=None, description=re.sub(r"^[\u2022\s]*", "", desc).strip(" ."),
+                            activity_class=m.group(1).capitalize()))
+    return out
+
+
+def fallback_applicant(lines):
+    """Memos without an 'Applicant's name:' label: the first 'Some Name Limited (Short name)' in the text."""
+    m = re.search(r"((?:[A-Z\u014c][\w&'\u2019.-]*\s+){1,6}(?:Limited|Ltd|Incorporated|Inc|Corporation|Holdings|Trust|Partnership|Company))"
+                  r"\s*\(\s*[\"\u201c\u2018']?[A-Z][\w ]{1,25}[\"\u201d\u2019']?\s*\)", flat(lines))
+    return m.group(1).strip() if m else None
+
+
+def fallback_address(lines):
+    """Memos without a 'Site address:' label: '... Recycling at 263 James Fletcher Drive, Favona, Auckland' in the Subject paragraph."""
+    for i, ln in enumerate(lines):
+        if re.match(r"Subject:", ln):
+            parts = [ln]
+            for nxt in lines[i + 1:i + 3]:
+                if re.match(r"(I |The |This |To:|From:|\u2022)", nxt) or parts[-1].endswith("."):
+                    break
+                parts.append(nxt)
+            m = re.search(r"\bat\s+(\d+[A-Za-z]?(?:\s*/\s*\d+)?\s+[A-Z].+)$", flat(parts))
+            return m.group(1).strip(" .") if m else None
+    return None
 
 
 def norm_aq(txt: str) -> str:
@@ -198,10 +281,10 @@ def parse_memo(lines) -> dict:
     ghg = re.search(r"[Ss]ite total of ([\d,]+) tonnes\.?\s*CO\S*", whole)
     frm = re.search(r"From:\s*([^,\n]+),\s*([^\n]+)", "\n".join(lines))
     return dict(
-        applicant=g(r"Applicant(?:'s|’s)? ?(?:name)?:\s*(.+)"),
-        site_address=re.sub(r"\s*\(.*?\)\s*$", "", g(r"Site address:\s*(.+)") or "") or None,
+        applicant=g(r"Applicant(?:'s|’s)? ?(?:name)?:\s*(.+)") or fallback_applicant(lines),
+        site_address=re.sub(r"\s*\(.*?\)\s*$", "", g(r"Site address:\s*(.+)") or "") or fallback_address(lines),
         years_granted=granted, years_requested=requested,
-        rules=triggered_rules(lines),
+        rules=triggered_rules(lines) or fallback_rules(lines),
         air_quality_area=norm_aq(aq.group(0)) if aq else None,
         ghg_site_total=float(ghg.group(1).replace(",", "")) if ghg else None,
         specialist=f"{frm.group(1).strip()} ({frm.group(2).strip()})" if frm else None,
@@ -210,30 +293,21 @@ def parse_memo(lines) -> dict:
 
 # ------------------------------------------------------------------ consent
 def parse_conditions(lines) -> list[dict]:
-    """Every numbered condition between 'subject to the following conditions' and 'Advice notes'."""
+    """Every numbered condition between 'subject to the following conditions' (or an 'Appendix A - Consent conditions' /
+    'Conditions' heading) and 'Advice notes'. Handles '5.' and court-order style '5 ' / '13A ' numbering."""
     text = "\n".join(lines)
-    m = re.search(r"subject to (?:the )?following\s+conditions\s*[:.]?", text)
+    m = (re.search(r"subject to (?:the )?following\s+conditions\s*[:.]?", text)
+         or re.search(r"(?mi)^\s*appendix [a-z]\s*[-\u2013\u2014]\s*(?:consent )?conditions\s*$", text)
+         or re.search(r"(?mi)^\s*conditions\s*$", text))
     if not m:
         return []
     body = text[m.end():]
-    end = re.search(r"(?m)^(?:\d+\.\s*)?Advice notes?\s*$|^Delegated decision maker", body)
+    end = re.search(r"(?m)^(?:\d+\.\s*)?(?:Advice notes?|Advice Notes)(?:\s*[-\u2013]\s*General)?\s*$|^Delegated decision maker", body)
     body = body[:end.start()] if end else body
-    blines = [ln for ln in body.splitlines() if ln.strip()]
-    conds, heading, expected = [], "General", 1
-    for k, ln in enumerate(blines):
-        mm = re.match(r"^(\d{1,3})[.)]\s*(.*)", ln)
-        if mm and int(mm.group(1)) == expected:
-            conds.append(dict(number=expected, section=heading, lines=[mm.group(2)]))
-            expected += 1
-            continue
-        nxt = blines[k + 1] if k + 1 < len(blines) else ""
-        is_heading = (re.match(rf"^{expected}[.)]\s", nxt) and len(ln) <= 70 and len(ln.split()) <= 8
-                      and ln[0].isupper() and not re.search(r"\d", ln) and not ln.endswith((".", ";", ",", ":")))
-        if is_heading:
-            heading = re.sub(r"\s+conditions?$", "", ln, flags=re.I).strip()
-            heading = heading[:1].upper() + heading[1:]
-        elif conds:
-            conds[-1]["lines"].append(ln)
+    blines = [ln for ln in body.splitlines() if ln.strip() and not re.fullmatch(r"\s*\d{1,3}\s*", ln)]
+    conds = _split_conditions(blines, dotted=True)
+    if len(conds) < 3:
+        conds = _split_conditions(blines, dotted=False) or conds
     for c in conds:
         c["text"] = re.sub(r"\s+", " ", " ".join(c.pop("lines"))).strip()
         scores = [(len(re.findall(p, c["text"], re.I)), -i, name) for i, (name, p) in enumerate(THEMES)]
@@ -242,15 +316,84 @@ def parse_conditions(lines) -> list[dict]:
     return conds
 
 
-def parse_consent(lines) -> dict:
-    conds = parse_conditions(lines)
+def _split_conditions(blines, dotted):
+    sep = r"[.)]\s*" if dotted else r"\s+(?=[A-Z])"
+    conds, heading, expected, last_int = [], "General", 1, 0
+
+    def start(ln):
+        """label of the condition starting on this line, else None. 13A is accepted right after 13 (court-order style)."""
+        mm = re.match(rf"^(\d{{1,3}})([A-Z]?){sep}(.*)", ln)
+        if not mm:
+            return None
+        n, suffix = int(mm.group(1)), mm.group(2)
+        if not suffix and n == expected:
+            return n, mm.group(3)
+        if suffix and n == last_int:
+            return f"{n}{suffix}", mm.group(3)
+        return None
+
+    def heading_like(ln):
+        return (len(ln) <= 70 and len(ln.split()) <= 8 and ln[0].isupper() and not re.search(r"\d", ln)
+                and not ln.endswith((".", ";", ",", ":")))
+
+    for k, ln in enumerate(blines):
+        st_ = start(ln)
+        if st_:
+            label, rest = st_
+            conds.append(dict(number=label, section=heading, lines=[rest]))
+            if isinstance(label, int):
+                expected, last_int = label + 1, label
+            continue
+        j = k + 1                                                    # skip over stacked headings to the next condition
+        while j < len(blines) and j < k + 3 and heading_like(blines[j]) and not start(blines[j]):
+            j += 1
+        nxt = blines[j] if j < len(blines) else ""
+        if heading_like(ln) and (start(nxt) or re.match(rf"^{expected}[.)]?\s", nxt)):
+            heading = re.sub(r"\s+conditions?$", "", ln, flags=re.I).strip()
+            heading = heading[:1].upper() + heading[1:]
+        elif conds:
+            conds[-1]["lines"].append(ln)
+    return conds
+
+
+def _only_date(s):
+    return re.fullmatch(rf"\s*(?:{DATE_TXT}|{DATE_NUM})\s*", s) is not None
+
+
+def consent_date(lines):
+    """Decision date. Tried in order: 'Delegated decision maker ... Date:', an Environment Court 'Date of Issue/Order',
+    a commissioner's sign-off (name / title / date on its own line), then any 'Date: <date>'."""
     text = "\n".join(lines)
     i = text.rfind("Delegated decision maker")
-    m = re.search(r"Date:\s*(.{0,40})", text[i:]) if i >= 0 else None
+    if i >= 0:
+        m = re.search(r"Date:\s*(.{0,40})", text[i:i + 400])
+        d = first_date(m.group(1)) if m else None
+        if d:
+            return d
+    for lab in ("Date of Issue", "Date of Order", "Date of decision", "Decision date"):
+        m = re.search(rf"{lab}\s*:\s*(.{{0,40}})", text, re.I)
+        d = first_date(m.group(1)) if m else None
+        if d:
+            return d
+    signed = [first_date(m.group(2)) for m in re.finditer(
+        r"(?m)^([^\n]*(?:Commissioner|Chairperson|decision maker|Delegate|Planner|Manager)[^\n]*)\n([^\n]{6,40})$", text)
+        if _only_date(m.group(2))]
+    if signed:
+        return signed[-1]
+    dates = [first_date(m.group(1)) for m in re.finditer(r"Date:\s*(.{0,40})", text)]
+    dates = [d for d in dates if d]
+    return dates[-1] if dates else None
+
+
+def parse_consent(lines) -> dict:
+    conds = parse_conditions(lines)
     expiry_txt = next((c["text"] for c in conds if re.search(r"\bexpires?\b", c["text"])), None)
     exp = re.search(r"expires?\s+on\s+(?:the\s+)?(.{0,45})", expiry_txt) if expiry_txt else None
-    return dict(conditions=conds, date_granted=first_date(m.group(1)) if m else None,
-                expiry_condition=expiry_txt, expiry_stated=first_date(exp.group(1)) if exp else None)
+    rel = re.search(rf"expires?\s+(?:on\s+)?(?:the\s+)?({NUM})[ -]?years?\s+(?:following|after|from)", expiry_txt or "", re.I)
+    return dict(conditions=conds, date_granted=consent_date(lines),
+                expiry_condition=expiry_txt, expiry_stated=first_date(exp.group(1)) if exp else None,
+                expiry_years=num_val(rel.group(1)) if rel else None,
+                expiry_from_commencement=bool(expiry_txt and re.search(r"commencement", expiry_txt, re.I)))
 
 
 def find_nztm(*line_lists):
@@ -261,12 +404,17 @@ def find_nztm(*line_lists):
 
 # ------------------------------------------------------------------ combine
 def build_row(cid, consent_lines, memo_lines) -> dict:
-    c = parse_consent(consent_lines) if consent_lines else dict(conditions=[], date_granted=None, expiry_condition=None, expiry_stated=None)
+    c = parse_consent(consent_lines) if consent_lines else dict(conditions=[], date_granted=None, expiry_condition=None, expiry_stated=None,
+                                                                  expiry_years=None, expiry_from_commencement=False)
     m = parse_memo(memo_lines) if memo_lines else {}
     years, granted = m.get("years_granted"), c["date_granted"]
     expiry, basis = c["expiry_stated"], "Consent condition"
-    if expiry is None and years and granted:                      # expiry condition is relative ("10 years after issue")
-        expiry, basis = add_years(granted, years), "Grant date + memo duration"
+    if expiry is None and granted and (c["expiry_years"] or years):   # expiry condition is relative ("10 years after issue")
+        if c["expiry_years"]:
+            expiry = add_years(granted, c["expiry_years"])
+            basis = "Grant date + term in consent condition" + (" (condition counts from commencement)" if c["expiry_from_commencement"] else "")
+        else:
+            expiry, basis = add_years(granted, years), "Grant date + memo duration"
     elif expiry is None:
         basis = None
     rules = m.get("rules", [])
@@ -285,7 +433,7 @@ def build_row(cid, consent_lines, memo_lines) -> dict:
         "applicant (memo)": m.get("applicant"), "site address (memo)": m.get("site_address")}.items() if not v]
     return dict(
         consent_id=cid, applicant=m.get("applicant"), site_address=m.get("site_address"),
-        years_granted=years, years_requested=m.get("years_requested"),
+        years_granted=years, years_requested=m.get("years_requested"), years_condition=c["expiry_years"],
         date_granted=granted, date_expiry=expiry, expiry_basis=basis,
         air_quality_area=m.get("air_quality_area"), activity_status=overall,
         rules_triggered=len(rules), rules=rules, rule_text="; ".join(r["rule"] for r in rules),
@@ -418,6 +566,7 @@ def summary_table(r: dict) -> pd.DataFrame:
         ("Status", _fmt(r["status"])),
         ("Years of consent granted (memo)", _fmt(r["years_granted"])),
         ("Years requested (memo)", _fmt(r["years_requested"])),
+        ("Term written in expiry condition (consent)", _fmt(r.get("years_condition"))),
         ("Granted (consent)", _fmt(r["date_granted"])),
         ("Expires", f"{_fmt(r['date_expiry'])} (basis: {_fmt(r['expiry_basis'])})"),
         ("Air quality area (memo)", _fmt(r["air_quality_area"])),
