@@ -906,4 +906,46 @@ def render_header():
                border-radius:18px; box-sizing:border-box; display:flex; align-items:center;
                justify-content:space-between; gap:24px; }}
       .main {{ min-width:0; }}
-      .left {{ display:flex; align-items:center
+      .left {{ display:flex; align-items:center; gap:22px; min-width:0; }}
+      .logo {{ height:84px; background:#fff; border-radius:14px; padding:7px 10px; flex:none; }}
+      h1 {{ margin:0 0 4px 0; font-size:2.0rem; }}
+      .sub {{ margin:0; color:#cbd5e1; font-size:.98rem; }}
+      .right {{ text-align:right; background:rgba(255,255,255,.12); border-radius:16px; padding:12px 20px;
+                min-width:215px; flex:none; }}
+      .time {{ font-size:2rem; font-weight:700; line-height:1.1; font-variant-numeric:tabular-nums; }}
+      .date {{ color:#cbd5e1; font-size:.85rem; margin-bottom:8px; }}
+      .loc {{ font-size:.92rem; }}
+      .wx {{ font-size:1rem; margin-top:3px; }}
+      .chip {{ display:inline-block; background:rgba(255,255,255,.14); color:#fff; padding:3px 12px;
+               border-radius:999px; font-size:.8rem; margin:10px 8px 0 0; }}
+      @media (max-width:760px) {{ .hero {{ flex-direction:column; align-items:flex-start; }} .right {{ text-align:left; }} }}
+    </style>
+    <div class="hero">
+      <div class="main">
+        <div class="left">
+          <img class="logo" src="data:image/png;base64,{LOGO_B64}" alt="Auckland Council">
+          <div><h1>Air Discharge Consent Analytics</h1>
+          <p class="sub">Auckland Unitary Plan air discharge consents - read straight from the decision and memo PDFs.</p></div>
+        </div>
+        <span class="chip">Conditions: consent PDF</span><span class="chip">Years, rules, details: memo PDF</span>
+        <span class="chip">Nothing is guessed</span>
+      </div>
+      <div class="right">
+        <div class="time" id="t">--:--:-- --</div>
+        <div class="date" id="d"></div>
+        <div class="loc">📍 {HDR_CITY}</div>
+        <div class="wx">{icon} {temp} · {label}{wind_txt}</div>
+      </div>
+    </div>
+    <script>
+      function tick() {{
+        const n = new Date();
+        document.getElementById('t').textContent = n.toLocaleTimeString('en-NZ',
+          {{timeZone:'{HDR_TZ}', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}}).toUpperCase();
+        document.getElementById('d').textContent = n.toLocaleDateString('en-NZ',
+          {{timeZone:'{HDR_TZ}', weekday:'long', day:'numeric', month:'long'}});
+      }}
+      tick(); setInterval(tick, 1000);
+    </script>
+    """
+    components.html(html, height=210)
