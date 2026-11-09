@@ -779,10 +779,16 @@ def answer(q: str, df: pd.DataFrame, history, mode: str, api_key: str, model: st
         return ans + "\n\n*Add an Anthropic API key in the sidebar to let the AI assistant answer this kind of question.*", tbl, "rule-based lookup"
     try:
         return ask_llm(q, df, history, api_key, model, as_at), None, f"AI assistant ({model})"
-       except ImportError as e:
-        return ans + f"\n\n*The AI assistant could not load `anthropic`: {type(e).__name__}: {e}*", tbl, "rule-based lookup"
+    except ImportError as e:
+        import traceback
+        traceback.print_exc()                                    # full traceback goes to the Streamlit logs
+        if getattr(e, "name", "") == "anthropic":                # the package itself is missing
+            return ans + "\n\n*The AI assistant needs the `anthropic` package: add `anthropic` to requirements.txt (or `pip install anthropic`).*", tbl, "rule-based lookup"
+        return ans + f"\n\n*The AI assistant could not load the `anthropic` package: {type(e).__name__}: {e}*", tbl, "rule-based lookup"
     except Exception as e:
-        return ans + f"\n\n*The AI assistant is unavailable ({type(e).__name__}); showing the rule-based answer.*", tbl, "rule-based lookup"
+        import traceback
+        traceback.print_exc()
+        return ans + f"\n\n*The AI assistant is unavailable ({type(e).__name__}: {str(e)[:300]}); showing the rule-based answer.*", tbl, "rule-based lookup"
 
 
 # ------------------------------------------------------------------ map locations
