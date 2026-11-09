@@ -30,3 +30,4 @@ plotly
 requests
 pypdf
 ollama
+anthropic
