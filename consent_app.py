@@ -885,8 +885,10 @@ AUCKLAND = {"lat": -36.85, "lon": 174.76}   # default map centre
 
 GMAP_HTML = r"""
 <style>html,body{margin:0;height:100%;font-family:sans-serif} #map{height:100%;width:100%}
+#legend{position:absolute;top:10px;right:10px;z-index:5;background:#fff;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px rgba(0,0,0,.25);font-size:13px}
+#legend label{display:block;margin:3px 0;cursor:pointer} #legend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin:0 6px -1px 4px}
 #msg{display:none;position:absolute;top:8px;left:8px;right:8px;z-index:5;background:#fef3c7;color:#92400e;padding:8px 12px;border-radius:8px;font-size:13px}</style>
-<div id="map"></div><div id="msg"></div>
+<div id="map"></div><div id="legend"></div><div id="msg"></div>
 <script>
 const POINTS = __POINTS__, PENDING = __PENDING__, COLOURS = __COLOURS__, CENTRE = __CENTRE__;
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -897,11 +899,17 @@ window.gm_authFailure = () => note('Google Maps rejected the API key. Enable <b>
 function initMap() {
   const map = new google.maps.Map(document.getElementById('map'), {center: CENTRE, zoom: 9, streetViewControl: false});
   const win = new google.maps.InfoWindow(), bounds = new google.maps.LatLngBounds(); let n = 0;
+  const ORDER = ['Expired', 'Active', 'Unknown'], markers = {Expired: [], Active: [], Unknown: []}, shown = {Expired: true, Active: true, Unknown: true};
+  const total = s => POINTS.concat(PENDING).filter(p => p.status === s).length;
+  document.getElementById('legend').innerHTML = '<b>Status</b>' + ORDER.map(s => '<label><input type="checkbox" checked data-s="' + s + '">' +
+    '<i style="background:' + COLOURS[s] + '"></i>' + s + ' (' + total(s) + ')</label>').join('');
+  document.querySelectorAll('#legend input').forEach(cb => cb.addEventListener('change', () => {
+    shown[cb.dataset.s] = cb.checked; markers[cb.dataset.s].forEach(m => m.setVisible(cb.checked)); }));
   function add(p, pos) {
     const mk = new google.maps.Marker({position: pos, map, title: p.id, icon: {path: google.maps.SymbolPath.CIRCLE, scale: 10,
       fillColor: COLOURS[p.status] || '#9ca3af', fillOpacity: .95, strokeColor: '#fff', strokeWeight: 2}});
     mk.addListener('click', () => { win.setContent(info(p)); win.open(map, mk); });
-    bounds.extend(pos); n++;
+    (markers[p.status] || markers.Unknown).push(mk); bounds.extend(pos); n++;
   }
   function fit() { if (n > 1) map.fitBounds(bounds, 60); else if (n === 1) { map.setCenter(bounds.getCenter()); map.setZoom(15); } }
   POINTS.forEach(p => add(p, {lat: p.lat, lng: p.lon}));
@@ -942,12 +950,14 @@ def google_map(mdf: pd.DataFrame, pending: pd.DataFrame, key: str, height: int =
     """Google Map with one coloured marker per consent. `pending` rows (address only) are geocoded in the browser."""
     import streamlit.components.v1 as components
     safe = lambda o: json.dumps(o, ensure_ascii=False).replace("</", "<\\/")
-    points = [dict(id=r.consent_id, lat=float(r.lat), lon=float(r.lon), status=r.status, site=show(r.site_address),
+    disp = lambda v: "Unknown" if v in (NOT_FOUND, None) or (isinstance(v, float) and pd.isna(v)) else v
+    colours = {"Active": STATUS_COLOURS["Active"], "Expired": STATUS_COLOURS["Expired"], "Unknown": STATUS_COLOURS[NOT_FOUND]}
+    points = [dict(id=r.consent_id, lat=float(r.lat), lon=float(r.lon), status=disp(r.status), site=show(r.site_address),
                    zone=show(r.air_quality_area), basis=r.location_basis) for r in mdf.itertuples()]
-    pend = [dict(id=r.consent_id, address=r.site_address, status=r.status, site=r.site_address,
+    pend = [dict(id=r.consent_id, address=r.site_address, status=disp(r.status), site=r.site_address,
                  zone=show(r.air_quality_area), basis="Memo site address (Google, in browser)") for r in pending.itertuples()]
     html = (GMAP_HTML.replace("__POINTS__", safe(points)).replace("__PENDING__", safe(pend))
-            .replace("__COLOURS__", safe(STATUS_COLOURS)).replace("__CENTRE__", safe({"lat": AUCKLAND["lat"], "lng": AUCKLAND["lon"]}))
+            .replace("__COLOURS__", safe(colours)).replace("__CENTRE__", safe({"lat": AUCKLAND["lat"], "lng": AUCKLAND["lon"]}))
             .replace("__KEY__", urllib.parse.quote(key)))
     components.html(html, height=height)
 # ------------------------------------------------------------------ dashboard helpers
@@ -1282,7 +1292,10 @@ else:
     st.info("No Google Maps API key set, so this is the OpenStreetMap fallback. Add a key in the sidebar for Google Maps.")
     located["air_quality_zone"] = located.air_quality_area.fillna(NOT_FOUND)
     located["site"] = located.site_address.fillna(NOT_FOUND)
-    fig = px.scatter_map(located, lat="lat", lon="lon", color="status", hover_name="consent_id", color_discrete_map=STATUS_COLOURS,
+    located["status"] = located.status.replace({NOT_FOUND: "Unknown"})
+    fig = px.scatter_map(located, lat="lat", lon="lon", color="status", hover_name="consent_id",
+                         color_discrete_map={**STATUS_COLOURS, "Unknown": STATUS_COLOURS[NOT_FOUND]},
+                         category_orders={"status": ["Expired", "Active", "Unknown"]},
                          hover_data={"site": True, "air_quality_zone": True, "location_basis": True, "lat": False, "lon": False},
                          center=AUCKLAND, zoom=9, height=560)
     fig.update_traces(marker=dict(size=16))
