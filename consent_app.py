@@ -34,6 +34,8 @@ import streamlit as st
 MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
 DATE_TXT = rf"(\d{{1,2}})\s*(?:st|nd|rd|th)?\s+(?:of\s+)?({MONTHS})\s+(\d{{4}})"   # 3rd November 2017 / 18th of August 2036
 DATE_NUM = r"(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{4}|\d{2})\b"                         # 29 / 10 / 2018, 4/4/24
+# ---- PASTE YOUR GOOGLE MAPS API KEY BETWEEN THE QUOTES (Maps JavaScript API + Geocoding API must be enabled) ----
+GOOGLE_MAPS_API_KEY = "AIzaSyBl2_jHtCPQBaZ372QKgiPt39p-_6wYlW4"
 NOT_FOUND = "Not found"
 CLASS_RANK = {"Controlled": 1, "Restricted discretionary": 2, "Discretionary": 3, "Non-complying": 4, "Prohibited": 5}
 
@@ -1165,12 +1167,8 @@ st.sidebar.header("Filters")
 as_at = st.sidebar.date_input("Status as of", date.today())
 st.sidebar.divider()
 st.sidebar.subheader("Google Maps")
-try:
-    _g = st.secrets.get("GOOGLE_MAPS_API_KEY", "")
-except Exception:
-    _g = ""
-gmaps_key = _g or os.environ.get("GOOGLE_MAPS_API_KEY", "") or st.sidebar.text_input(
-    "Google Maps API key", type="password", help="Needs Maps JavaScript API + Geocoding API enabled. Or set GOOGLE_MAPS_API_KEY in secrets.")
+gmaps_key = GOOGLE_MAPS_API_KEY.strip()
+st.sidebar.caption("Google Maps key: set in the code." if gmaps_key else "No Google Maps key set: edit GOOGLE_MAPS_API_KEY near the top of the file.")
 if st.sidebar.button("Retry failed map lookups"):
     st.session_state["loc"] = {}
 df = pd.DataFrame(rows)
