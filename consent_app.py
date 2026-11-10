@@ -1183,10 +1183,7 @@ if not rows:
 # ---- sidebar: status date + filters
 st.sidebar.header("Filters")
 as_at = st.sidebar.date_input("Status as of", date.today())
-st.sidebar.divider()
-st.sidebar.subheader("Google Maps")
 gmaps_key = GOOGLE_MAPS_API_KEY.strip()
-st.sidebar.caption("Google Maps key: set in the code." if gmaps_key else "No Google Maps key set: edit GOOGLE_MAPS_API_KEY near the top of the file.")
 if st.sidebar.button("Retry failed map lookups"):
     st.session_state["loc"] = {}
 df = pd.DataFrame(rows)
