@@ -1,7 +1,7 @@
 """
 Air Discharge Consent Analytics (Streamlit)
 
-Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab
+Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab anthropic
       streamlit run consent_app.py
 
 Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs).
@@ -23,6 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 import io
+import os
 from collections import Counter
 from datetime import date, datetime, timedelta
 
@@ -705,6 +706,91 @@ def ask(q: str, df: pd.DataFrame):
     return head, view(sel)
 
 
+# ------------------------------------------------------------------ AI assistant (hybrid chatbot)
+# The rule-based bot above answers exact lookups instantly and offline. Questions it cannot handle (comparisons,
+# summaries, "why", open-ended wording) go to Claude, which sees ONLY the data extracted from the uploaded PDFs.
+LLM_MODELS = ["claude-sonnet-5-5", "claude-haiku-5-5"]
+LLM_HINT = re.compile(r"\b(compar\w*|summar\w*|why|explain|differen\w*|similar|stricter|strictest|stricter|less strict|recommend\w*|"
+                      r"trend\w*|common|typical|pattern\w*|insight\w*|versus|vs|relationship|themes?|requirements?|overview|"
+                      r"what do(?:es)?|how do(?:es)?|tell me more|key|main|biggest|risks?)\b", re.I)
+LLM_INSTRUCTIONS = """You answer questions about Auckland air discharge resource consents using ONLY the JSON data supplied below.
+The data was extracted from consent PDFs (conditions, grant date, expiry) and memo PDFs (everything else: years granted/requested,
+triggered rules, applicant, site address, air quality area, specialist, GHG figures).
+Rules:
+- Never use outside knowledge about these consents. If a value is null or missing, say "Not found" - do not guess or infer.
+- Cite consent numbers (DIS########) and, for conditions, the condition number, e.g. "DIS60308433, condition 7".
+- For counts, rankings or comparisons, name the consents you counted so the answer can be checked.
+- 'status' is Active/Expired as of the date given below. Discharge types and mitigation measures are keyword-based groupings,
+  so describe them as such when you use them.
+- Be concise. Use a short table only when comparing several consents. Plain language, no preamble."""
+
+
+def _clean(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    if isinstance(v, date):
+        return v.isoformat()
+    return v
+
+
+def llm_context(df: pd.DataFrame, cond_chars: int = 700) -> str:
+    """Compact JSON of everything extracted, for the AI assistant."""
+    recs = []
+    for r in df.to_dict("records"):
+        recs.append(dict(
+            consent_id=r["consent_id"], applicant=_clean(r["applicant"]), site_address=_clean(r["site_address"]),
+            status=_clean(r.get("status")), date_granted=_clean(r["date_granted"]), date_expiry=_clean(r["date_expiry"]),
+            expiry_basis=_clean(r["expiry_basis"]), years_granted_memo=_clean(r["years_granted"]),
+            years_requested_memo=_clean(r["years_requested"]), term_in_expiry_condition=_clean(r.get("years_condition")),
+            overall_activity_status=_clean(r["activity_status"]), air_quality_area=_clean(r["air_quality_area"]),
+            ghg_site_total_t_co2e_per_year=_clean(r["ghg_site_total"]), specialist=_clean(r["specialist"]),
+            rules=[dict(rule=x["rule"], rule_group=x["group"], description=x["description"], activity_class=x["activity_class"],
+                        discharge_type=x.get("discharge_type")) for x in r["rules"]],
+            discharge_types=r["discharge_types"], mitigation_measures=r["mitigation"],
+            conditions=[dict(number=c["number"], section=c["section"], text=c["text"][:cond_chars]) for c in r["conditions"]]))
+    return json.dumps(recs, ensure_ascii=False, default=str, separators=(",", ":"))
+
+
+def ask_llm(q: str, df: pd.DataFrame, history, api_key: str, model: str, as_at: date) -> str:
+    """Answer with Claude, grounded in the extracted data. The data block is cached so follow-up questions are cheap."""
+    import anthropic                                             # pip install anthropic
+    ctx = llm_context(df)
+    if len(ctx) > 600_000:                                       # very large uploads: shorten the condition text
+        ctx = llm_context(df, 300)
+    system = [{"type": "text", "text": LLM_INSTRUCTIONS + f"\nStatus date: {as_at.isoformat()}."},
+              {"type": "text", "text": "EXTRACTED DATA (JSON):\n" + ctx, "cache_control": {"type": "ephemeral"}}]
+    msgs = [{"role": who, "content": msg} for who, msg, _ in history[-8:]] + [{"role": "user", "content": q}]
+    resp = anthropic.Anthropic(api_key=api_key).messages.create(model=model, max_tokens=1500, system=system, messages=msgs)
+    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+
+
+def rule_confident(q: str, ans: str) -> bool:
+    """False when the rule-based bot gave up / only found a loose match, or the question needs reasoning, not lookup."""
+    gave_up = ans.startswith(("Ask me about", "I couldn't find", "Closest match", "No condition text"))
+    return not gave_up and not LLM_HINT.search(q)
+
+
+def answer(q: str, df: pd.DataFrame, history, mode: str, api_key: str, model: str, as_at: date):
+    """Hybrid chatbot. Returns (markdown, table or None, source label)."""
+    ans, tbl = ask(q, df)
+    if mode == "Rule-based only" or (mode.startswith("Hybrid") and rule_confident(q, ans)):
+        return ans, tbl, "rule-based lookup"
+    if not api_key:
+        return ans + "\n\n*Add an Anthropic API key in the sidebar to let the AI assistant answer this kind of question.*", tbl, "rule-based lookup"
+    try:
+        return ask_llm(q, df, history, api_key, model, as_at), None, f"AI assistant ({model})"
+    except ImportError as e:
+        import traceback
+        traceback.print_exc()                                    # full traceback goes to the Streamlit logs
+        if getattr(e, "name", "") == "anthropic":                # the package itself is missing
+            return ans + "\n\n*The AI assistant needs the `anthropic` package: add `anthropic` to requirements.txt (or `pip install anthropic`).*", tbl, "rule-based lookup"
+        return ans + f"\n\n*The AI assistant could not load the `anthropic` package: {type(e).__name__}: {e}*", tbl, "rule-based lookup"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return ans + f"\n\n*The AI assistant is unavailable ({type(e).__name__}: {str(e)[:300]}); showing the rule-based answer.*", tbl, "rule-based lookup"
+
+
 # ------------------------------------------------------------------ map locations
 def nztm_to_latlon(e, n):
     """NZTM2000 -> (lat, lon); None if pyproj is not installed."""
@@ -1013,6 +1099,20 @@ try:
 except ImportError:
     st.sidebar.caption("For the PDF export run: pip install reportlab")
 
+st.sidebar.divider()
+st.sidebar.subheader("Chatbot")
+chat_mode = st.sidebar.radio("Mode", ["Hybrid (recommended)", "Rule-based only", "AI only"],
+                             help="Hybrid: exact lookups are answered instantly from the data; comparisons, summaries and open questions go to the AI assistant.")
+try:
+    _secret_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+except Exception:
+    _secret_key = ""
+api_key = _secret_key or os.environ.get("ANTHROPIC_API_KEY", "") or st.sidebar.text_input(
+    "Anthropic API key", type="password", help="Or set ANTHROPIC_API_KEY in .streamlit/secrets.toml or the environment.")
+llm_model = st.sidebar.selectbox("AI model", LLM_MODELS)
+st.sidebar.caption("The AI assistant sends the extracted consent data and your question to Anthropic's API. "
+                   "Rule-based answers stay on this machine.")
+
 # ---- KPI cards
 k = st.columns(5)
 kpi(k[0], "📄", "Consents", len(fdf), f"of {len(df)} uploaded", "#0f766e", "#0e7490")
@@ -1265,7 +1365,8 @@ st.subheader("💬 Consent chatbot")
 st.caption("Ask about anything in the Register or Consent summaries tabs, e.g. *tell me about DIS60308433*, *who is the specialist for DIS60361208*, "
            "*which consents are active*, *anything in Henderson*, *more than 15 years*, *what does rule A54 mean*, "
            "*conditions about odour for DIS60316131*, *average years granted*. "
-           "Answers are computed from the extracted data - no external AI service is used.")
+           "Exact lookups are computed from the extracted data on this machine; comparisons, summaries and open questions "
+           "go to the AI assistant (needs an API key in the sidebar), which only sees the extracted data.")
 if st.session_state.get("chat_key") != key:
     st.session_state["chat"], st.session_state["chat_key"] = [], key
 for who, msg, tbl in st.session_state["chat"]:
@@ -1274,7 +1375,9 @@ for who, msg, tbl in st.session_state["chat"]:
         if tbl is not None:
             st.dataframe(tbl, width="stretch", hide_index=True)
 if q := st.chat_input("Ask about the consents..."):
-    ans, tbl = ask(q, df)
+    with st.spinner("Thinking..."):
+        ans, tbl, src = answer(q, df, st.session_state["chat"], chat_mode, api_key, llm_model, as_at)
+    ans = f"{ans}\n\n*Answered by: {src}*"
     st.session_state["chat"] += [("user", q, None), ("assistant", ans, tbl)]
     with st.chat_message("user"):
         st.markdown(q)
