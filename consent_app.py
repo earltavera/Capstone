@@ -6,8 +6,8 @@ Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab a
 
 Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs).
 Nothing is cached between runs. A value that is not in the uploaded PDFs is reported as "Not found"
-(and listed on the Data quality tab), never guessed. The only online call is the map: when the PDFs print
-no NZTM reference, the memo's site address is looked up on OpenStreetMap.
+(and listed on the Data quality tab), never guessed. Online calls: the map (NZTM in the PDFs, else the memo's site address
+is geocoded with Google, falling back to OpenStreetMap).
 
 Sources
   * Consent PDF only  -> every condition (grouped under the consent's own headings), the
@@ -802,41 +802,122 @@ def nztm_to_latlon(e, n):
         return None
 
 
-@st.cache_data(show_spinner=False)
-def geocode(address: str):
-    """OpenStreetMap (Nominatim) lookup of the memo's site address; needs internet. Returns (lat, lon) or None."""
-    variants = list(dict.fromkeys([address, re.sub(r"^\d+\s*/\s*", "", address)]))   # '3/4 Amokura St' -> '4 Amokura St'
-    for q in variants:
-        try:
-            url = ("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=nz&q="
-                   + urllib.parse.quote(f"{q}, Auckland, New Zealand"))
-            req = urllib.request.Request(url, headers={"User-Agent": "consent-analytics/1.0 (student project)"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                hit = json.load(r)
-            time.sleep(1.1)                                                              # Nominatim: max 1 request/second
-            if hit:
-                return float(hit[0]["lat"]), float(hit[0]["lon"])
-        except Exception:
-            continue
-    return None
+def address_variants(address: str) -> list[str]:
+    a = re.sub(r"\s+", " ", re.sub(r"\(.*?\)", " ", address or "")).strip(" ,.")
+    no_unit = re.sub(r"^(?:unit|suite|level|lot)?\s*\w*\s*/\s*", "", a, flags=re.I)      # '3/4 Amokura St' -> '4 Amokura St'
+    return [v for v in dict.fromkeys([a, no_unit]) if v]
 
 
-def locate(row):
-    """(lat, lon, basis): NZTM printed in the PDFs first, otherwise the memo's site address looked up online."""
-    if row["nztm"]:
+def geocode_google(address: str, key: str):
+    """Google Geocoding API. Returns ((lat, lon) or None, error text or None)."""
+    url = "https://maps.googleapis.com/maps/api/geocode/json?" + urllib.parse.urlencode(
+        {"address": f"{address}, Auckland, New Zealand", "components": "country:NZ", "region": "nz", "key": key})
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            js = json.load(r)
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+    if js.get("status") == "OK":
+        loc = js["results"][0]["geometry"]["location"]
+        return (loc["lat"], loc["lng"]), None
+    return None, f'{js.get("status")}: {js.get("error_message", "")}'.strip()
+
+
+def geocode_osm(address: str):
+    """OpenStreetMap (Nominatim) backup. Returns ((lat, lon) or None, error text or None)."""
+    try:
+        url = ("https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=nz&q="
+               + urllib.parse.quote(f"{address}, Auckland, New Zealand"))
+        req = urllib.request.Request(url, headers={"User-Agent": "consent-analytics/1.0 (contact: your-email@example.com)"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            hit = json.load(r)
+        time.sleep(1.1)                                                   # Nominatim: max 1 request/second
+        return ((float(hit[0]["lat"]), float(hit[0]["lon"])), None) if hit else (None, "no match")
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def locate(row, gkey: str = "", manual: str = ""):
+    """(lat, lon, basis, note). Order: manual entry, NZTM in the PDFs, Google Geocoding, OpenStreetMap."""
+    manual = (manual or "").strip()
+    m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*[,; ]\s*(-?\d+(?:\.\d+)?)\s*", manual)
+    if m:
+        return float(m.group(1)), float(m.group(2)), "Entered manually (lat, lon)", ""
+    notes = []
+    if not manual and row["nztm"]:
         ll = nztm_to_latlon(*row["nztm"])
         if ll:
-            return ll[0], ll[1], "NZTM reference in the PDFs"
-    if row["site_address"]:
-        ll = geocode(row["site_address"])
+            return ll[0], ll[1], "NZTM reference in the PDFs", ""
+        notes.append("NZTM found but pyproj is not installed")
+    addr = manual or row["site_address"]
+    if not addr:
+        return None, None, "Not located", "; ".join(notes + ["no site address found in the memo and no NZTM in the PDFs"])
+    google_ok = bool(gkey)
+    for a in address_variants(addr):
+        if google_ok:
+            ll, err = geocode_google(a, gkey)
+            if ll:
+                return ll[0], ll[1], "Manual address (Google Geocoding)" if manual else "Memo site address (Google Geocoding)", ""
+            notes.append(f"Google '{a}': {err}")
+            if err and err.startswith(("REQUEST_DENIED", "OVER_", "INVALID_REQUEST")):
+                google_ok = False                                           # key problem: no point retrying variants
+    for a in address_variants(addr):
+        ll, err = geocode_osm(a)
         if ll:
-            return ll[0], ll[1], "Memo site address (OpenStreetMap lookup)"
-    return None, None, "Not located"
+            return ll[0], ll[1], "Site address (OpenStreetMap lookup)", ""
+        notes.append(f"OSM '{a}': {err}")
+    return None, None, "Not located", "; ".join(notes)
 
 
 AUCKLAND = {"lat": -36.85, "lon": 174.76}   # default map centre
 
+GMAP_HTML = """
+<style>html,body{margin:0;height:100%;font-family:sans-serif} #map{height:100%;width:100%}
+#msg{display:none;position:absolute;top:8px;left:8px;right:8px;z-index:5;background:#fef3c7;color:#92400e;padding:8px 12px;border-radius:8px;font-size:13px}</style>
+<div id="map"></div><div id="msg"></div>
+<script>
+const POINTS = __POINTS__, PENDING = __PENDING__, COLOURS = __COLOURS__, CENTRE = __CENTRE__;
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const info = p => '<b>' + esc(p.id) + '</b><br>' + esc(p.site) + '<br>Status: ' + esc(p.status) +
+                  '<br>Air quality zone: ' + esc(p.zone) + (p.basis ? '<br><i>Position from: ' + esc(p.basis) + '</i>' : '');
+function note(t){ const m = document.getElementById('msg'); m.style.display = 'block'; m.innerHTML = t; }
+window.gm_authFailure = () => note('Google Maps rejected the API key. Enable <b>Maps JavaScript API</b> and billing, and check key restrictions.');
+function initMap() {
+  const map = new google.maps.Map(document.getElementById('map'), {center: CENTRE, zoom: 9, streetViewControl: false});
+  const win = new google.maps.InfoWindow(), bounds = new google.maps.LatLngBounds(); let n = 0;
+  function add(p, pos) {
+    const mk = new google.maps.Marker({position: pos, map, title: p.id, icon: {path: google.maps.SymbolPath.CIRCLE, scale: 10,
+      fillColor: COLOURS[p.status] || '#9ca3af', fillOpacity: .95, strokeColor: '#fff', strokeWeight: 2}});
+    mk.addListener('click', () => { win.setContent(info(p)); win.open(map, mk); });
+    bounds.extend(pos); n++;
+  }
+  function fit() { if (n > 1) map.fitBounds(bounds, 60); else if (n === 1) { map.setCenter(bounds.getCenter()); map.setZoom(15); } }
+  POINTS.forEach(p => add(p, {lat: p.lat, lng: p.lon}));
+  let left = PENDING.length, failed = [];
+  if (!left) return fit();
+  const gc = new google.maps.Geocoder();
+  PENDING.forEach((p, i) => setTimeout(() => gc.geocode({address: p.address + ', Auckland, New Zealand', region: 'nz'}, (res, st) => {
+    if (st === 'OK') add(p, res[0].geometry.location); else failed.push(p.id + ' (' + st + ')');
+    if (--left === 0) { fit(); if (failed.length) note('Browser lookup failed for: ' + esc(failed.join(', '))); }
+  }), i * 250));
+}
+</script>
+<script async src="https://maps.googleapis.com/maps/api/js?key=__KEY__&callback=initMap&loading=async"></script>
+"""
 
+
+def google_map(mdf: pd.DataFrame, pending: pd.DataFrame, key: str, height: int = 560):
+    """Google Map with one coloured marker per consent. `pending` rows (address only) are geocoded in the browser."""
+    import streamlit.components.v1 as components
+    safe = lambda o: json.dumps(o, ensure_ascii=False).replace("</", "<\\/")
+    points = [dict(id=r.consent_id, lat=float(r.lat), lon=float(r.lon), status=r.status, site=show(r.site_address),
+                   zone=show(r.air_quality_area), basis=r.location_basis) for r in mdf.itertuples()]
+    pend = [dict(id=r.consent_id, address=r.site_address, status=r.status, site=r.site_address,
+                 zone=show(r.air_quality_area), basis="Memo site address (Google, in browser)") for r in pending.itertuples()]
+    html = (GMAP_HTML.replace("__POINTS__", safe(points)).replace("__PENDING__", safe(pend))
+            .replace("__COLOURS__", safe(STATUS_COLOURS)).replace("__CENTRE__", safe({"lat": AUCKLAND["lat"], "lng": AUCKLAND["lon"]}))
+            .replace("__KEY__", urllib.parse.quote(key)))
+    components.html(html, height=height)
 # ------------------------------------------------------------------ dashboard helpers
 def expiring_soon(df: pd.DataFrame, as_at: date, years: int) -> pd.DataFrame:
     """Consents whose expiry falls between `as_at` and `years` years later."""
@@ -1060,16 +1141,30 @@ if not rows:
 # ---- sidebar: status date + filters
 st.sidebar.header("Filters")
 as_at = st.sidebar.date_input("Status as of", date.today())
+st.sidebar.divider()
+st.sidebar.subheader("Google Maps")
+try:
+    _g = st.secrets.get("GOOGLE_MAPS_API_KEY", "")
+except Exception:
+    _g = ""
+gmaps_key = _g or os.environ.get("GOOGLE_MAPS_API_KEY", "") or st.sidebar.text_input(
+    "Google Maps API key", type="password", help="Needs Maps JavaScript API + Geocoding API enabled. Or set GOOGLE_MAPS_API_KEY in secrets.")
+if st.sidebar.button("Retry failed map lookups"):
+    st.session_state["loc"] = {}
 df = pd.DataFrame(rows)
 df["status"] = df.date_expiry.map(lambda d: NOT_FOUND if d is None or pd.isna(d) else ("Active" if d >= as_at else "Expired"))
 df["expiry_year"] = df.date_expiry.map(lambda d: str(d.year) if isinstance(d, date) else NOT_FOUND)
 df["class_label"] = df.activity_status.fillna(NOT_FOUND)
 df["zone_label"] = df.air_quality_area.fillna(NOT_FOUND)
+manual = st.session_state.setdefault("manual_loc", {})
+loc_cache = st.session_state.setdefault("loc", {})
 with st.spinner("Locating consents on the map..."):
-    loc_cache = st.session_state.setdefault("loc", {})
     for r in rows:
-        loc_cache.setdefault(r["consent_id"], locate(r))
-df["lat"], df["lon"], df["location_basis"] = zip(*[loc_cache[i] for i in df.consent_id])
+        ck = (r["consent_id"], gmaps_key, manual.get(r["consent_id"], ""))
+        if ck not in loc_cache:
+            loc_cache[ck] = locate(r, gmaps_key, ck[2])
+df["lat"], df["lon"], df["location_basis"], df["location_note"] = zip(
+    *[loc_cache[(i, gmaps_key, manual.get(i, ""))] for i in df.consent_id])
 show = lambda v: NOT_FOUND if v is None or (isinstance(v, float) and pd.isna(v)) else v
 
 f_status = st.sidebar.multiselect("Status", sorted(df.status.unique()), default=sorted(df.status.unique()))
@@ -1148,25 +1243,34 @@ with i2:
 
 # ---- Map (own section, above the tabs)
 st.subheader("🗺️ Consent map")
-mdf = fdf[fdf.lat.notna()].copy()
-if mdf.empty:
-    st.warning("No consent could be located: the PDFs print no NZTM reference and the address lookup found nothing "
-               "(it needs an internet connection).")
+located = fdf[fdf.lat.notna()].copy()
+pending = fdf[fdf.lat.isna() & fdf.site_address.notna()].copy()      # Python lookup failed; the browser will try Google itself
+if gmaps_key:
+    google_map(located, pending, gmaps_key)
+    st.caption("Google Map. Green = active, red = expired. Click a marker for location, status and air quality zone.")
+elif located.empty:
+    st.info("Add a Google Maps API key in the sidebar to show the map (none of the consents could be placed without it).")
 else:
-    mdf["air_quality_zone"] = mdf.air_quality_area.fillna(NOT_FOUND)
-    mdf["site"] = mdf.site_address.fillna(NOT_FOUND)
-    fig = px.scatter_map(
-        mdf, lat="lat", lon="lon", color="status", hover_name="consent_id", color_discrete_map=STATUS_COLOURS,
-        hover_data={"site": True, "air_quality_zone": True, "status": True, "location_basis": True, "lat": False, "lon": False},
-        labels={"site": "Location", "air_quality_zone": "Air quality zone", "status": "Status", "location_basis": "Position from"},
-        center=AUCKLAND, zoom=9, height=560)
+    st.info("No Google Maps API key set, so this is the OpenStreetMap fallback. Add a key in the sidebar for Google Maps.")
+    located["air_quality_zone"] = located.air_quality_area.fillna(NOT_FOUND)
+    located["site"] = located.site_address.fillna(NOT_FOUND)
+    fig = px.scatter_map(located, lat="lat", lon="lon", color="status", hover_name="consent_id", color_discrete_map=STATUS_COLOURS,
+                         hover_data={"site": True, "air_quality_zone": True, "location_basis": True, "lat": False, "lon": False},
+                         center=AUCKLAND, zoom=9, height=560)
     fig.update_traces(marker=dict(size=16))
     fig.update_layout(map_style="carto-positron", margin={"r": 0, "t": 0, "l": 0, "b": 0}, legend_title_text="")
     st.plotly_chart(fig, width="stretch")
-    st.caption("Centred on Auckland (zoom out/in or drag to explore). Green = active, red = expired. Hover a dot for the location, status and air quality zone.")
-miss = fdf[fdf.lat.isna()].consent_id.tolist()
-if miss:
-    st.warning("Could not be placed on the map (no NZTM in the PDFs and no address match): " + ", ".join(miss))
+
+unplaced = fdf[fdf.lat.isna()]
+if not unplaced.empty:
+    with st.expander(f"{len(unplaced)} consent(s) not placed by the server lookup - see why / enter a location", expanded=not gmaps_key):
+        st.dataframe(unplaced[["consent_id", "site_address", "location_note"]].fillna(NOT_FOUND), width="stretch", hide_index=True)
+        with st.form("manual_loc_form"):
+            vals = {cid: st.text_input(cid, value=manual.get(cid, ""), placeholder="Street address, or lat, lon  e.g. -36.93, 174.80")
+                    for cid in unplaced.consent_id}
+            if st.form_submit_button("Apply"):
+                manual.update({k: v.strip() for k, v in vals.items() if v.strip()})
+                st.rerun()
 
 t_over, t_reg, t_rules, t_mit, t_cond, t_det, t_dq = st.tabs(
     ["📊 Overview", "📑 Register", "📐 Triggered rules", "🏭 Discharges & mitigation", "📋 Conditions",
