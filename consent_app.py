@@ -816,7 +816,7 @@ def address_variants(address: str) -> list[str]:
     a = re.sub(r"\s+", " ", re.sub(r"\(.*?\)", " ", address or "")).strip(" ,.")
     no_unit = re.sub(r"^(?:unit|suite|level|lot)?\s*\w*\s*/\s*", "", a, flags=re.I)      # '3/4 Amokura St' -> '4 Amokura St'
     first_no = re.sub(r"^(\d+)[A-Za-z]?\s*[-\u2013]\s*\d+[A-Za-z]?\b", r"\1", no_unit)        # '11-19 Wairau Road' -> '11 Wairau Road'
-    street_only = re.sub(r"^\d+[A-Za-z]?\s*", "", first_no)                                  # last resort: the street + suburb
+    street_only = re.sub(r"^\d+[A-Za-z]?\s*", "", first_no)                                    # last resort: the street + suburb
     return [v for v in dict.fromkeys([a, no_unit, first_no, street_only]) if v]
 
 
@@ -843,7 +843,7 @@ def geocode_osm(address: str):
         req = urllib.request.Request(url, headers={"User-Agent": "consent-analytics/1.0 (contact: your-email@example.com)"})
         with urllib.request.urlopen(req, timeout=10) as r:
             hit = json.load(r)
-        time.sleep(1.1)                                                   # Nominatim: max 1 request/second
+        time.sleep(1.1)                                                     # Nominatim: max 1 request/second
         return ((float(hit[0]["lat"]), float(hit[0]["lon"])), None) if hit else (None, "no match")
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
@@ -881,26 +881,23 @@ def locate(row, gkey: str = "", manual: str = ""):
     return None, None, "Not located", "; ".join(notes)
 
 
-AUCKLAND = {"lat": -36.85, "lon": 174.76}   # default map centre
+AUCKLAND = {"lat": -36.85, "lon": 174.76}    # default map centre
 
 GMAP_HTML = r"""
 <style>html,body{margin:0;height:100%;font-family:sans-serif} #map{height:100%;width:100%}
 #legend{position:absolute;top:10px;right:10px;z-index:5;background:#fff;border-radius:8px;padding:8px 12px;box-shadow:0 2px 8px rgba(0,0,0,.25);font-size:13px}
-#legend label{display:block;margin:3px 0;cursor:pointer} #legend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin:0 6px -1px 4px}
-#msg{display:none;position:absolute;top:8px;left:8px;right:8px;z-index:5;background:#fef3c7;color:#92400e;padding:8px 12px;border-radius:8px;font-size:13px}</style>
-<div id="map"></div><div id="legend"></div><div id="msg"></div>
+#legend label{display:block;margin:3px 0;cursor:pointer} #legend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin:0 6px -1px 4px}</style>
+<div id="map"></div><div id="legend"></div>
 <script>
-const POINTS = __POINTS__, PENDING = __PENDING__, COLOURS = __COLOURS__, CENTRE = __CENTRE__;
+const POINTS = __POINTS__, COLOURS = __COLOURS__, CENTRE = __CENTRE__;
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const info = p => '<b>' + esc(p.id) + '</b><br>' + esc(p.site) + '<br>Status: ' + esc(p.status) +
                   '<br>Air quality zone: ' + esc(p.zone) + (p.basis ? '<br><i>Position from: ' + esc(p.basis) + '</i>' : '');
-function note(t){ const m = document.getElementById('msg'); m.style.display = 'block'; m.innerHTML = t; }
-window.gm_authFailure = () => note('Google Maps rejected the API key. Enable <b>Maps JavaScript API</b> and billing, and check key restrictions.');
 function initMap() {
   const map = new google.maps.Map(document.getElementById('map'), {center: CENTRE, zoom: 9, streetViewControl: false});
   const win = new google.maps.InfoWindow(), bounds = new google.maps.LatLngBounds(); let n = 0;
   const ORDER = ['Expired', 'Active', 'Unknown'], markers = {Expired: [], Active: [], Unknown: []}, shown = {Expired: true, Active: true, Unknown: true};
-  const total = s => POINTS.concat(PENDING).filter(p => p.status === s).length;
+  const total = s => POINTS.filter(p => p.status === s).length;
   document.getElementById('legend').innerHTML = '<b>Status</b>' + ORDER.map(s => '<label><input type="checkbox" checked data-s="' + s + '">' +
     '<i style="background:' + COLOURS[s] + '"></i>' + s + ' (' + total(s) + ')</label>').join('');
   document.querySelectorAll('#legend input').forEach(cb => cb.addEventListener('change', () => {
@@ -913,50 +910,22 @@ function initMap() {
   }
   function fit() { if (n > 1) map.fitBounds(bounds, 60); else if (n === 1) { map.setCenter(bounds.getCenter()); map.setZoom(15); } }
   POINTS.forEach(p => add(p, {lat: p.lat, lng: p.lon}));
-  let left = PENDING.length, failed = [];
-  if (!left) return fit();
-  const gc = new google.maps.Geocoder();
-  const variants = a => { const x = a.replace(/\(.*?\)/g, ' ').replace(/\s+/g, ' ').trim().replace(/[ ,.]+$/, '');
-    const first = x.replace(/^(\d+)[A-Za-z]?\s*[-\u2013]\s*\d+[A-Za-z]?\b/, '$1');
-    return [...new Set([x, first, first.replace(/^\d+[A-Za-z]?\s*/, '')])]; };
-  const viaGoogle = q => new Promise(res => gc.geocode({address: q + ', Auckland, New Zealand', region: 'nz'},
-      (r, st) => res(st === 'OK' ? {pos: r[0].geometry.location, how: 'Google (browser)'} : {err: st})));
-  const viaOSM = q => fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=nz&q=' +
-      encodeURIComponent(q + ', Auckland, New Zealand')).then(r => r.json())
-      .then(h => h.length ? {pos: {lat: +h[0].lat, lng: +h[0].lon}, how: 'OpenStreetMap (browser)'} : {err: 'no match'})
-      .catch(e => ({err: 'OSM ' + e}));
-  (async () => {
-    for (const p of PENDING) {
-      let hit = null, errs = [];
-      for (const q of variants(p.address)) {
-        for (const f of [viaGoogle, viaOSM]) {
-          const r = await f(q); if (r.pos) { hit = r; break; } errs.push(r.err);
-          await new Promise(t => setTimeout(t, f === viaOSM ? 1100 : 150));
-        }
-        if (hit) break;
-      }
-      if (hit) { p.basis = 'Memo site address, ' + hit.how; add(p, hit.pos); }
-      else failed.push(p.id + ' (' + [...new Set(errs)].join('/') + ')');
-    }
-    fit(); if (failed.length) note('Browser lookup failed for: ' + esc(failed.join(', ')));
-  })();
+  fit();
 }
 </script>
 <script async src="https://maps.googleapis.com/maps/api/js?key=__KEY__&callback=initMap&loading=async"></script>
 """
 
 
-def google_map(mdf: pd.DataFrame, pending: pd.DataFrame, key: str, height: int = 560):
-    """Google Map with one coloured marker per consent. `pending` rows (address only) are geocoded in the browser."""
+def google_map(mdf: pd.DataFrame, key: str, height: int = 560):
+    """Google Map with one coloured marker per consent."""
     import streamlit.components.v1 as components
     safe = lambda o: json.dumps(o, ensure_ascii=False).replace("</", "<\\/")
     disp = lambda v: "Unknown" if v in (NOT_FOUND, None) or (isinstance(v, float) and pd.isna(v)) else v
     colours = {"Active": STATUS_COLOURS["Active"], "Expired": STATUS_COLOURS["Expired"], "Unknown": STATUS_COLOURS[NOT_FOUND]}
     points = [dict(id=r.consent_id, lat=float(r.lat), lon=float(r.lon), status=disp(r.status), site=show(r.site_address),
                    zone=show(r.air_quality_area), basis=r.location_basis) for r in mdf.itertuples()]
-    pend = [dict(id=r.consent_id, address=r.site_address, status=disp(r.status), site=r.site_address,
-                 zone=show(r.air_quality_area), basis="Memo site address (Google, in browser)") for r in pending.itertuples()]
-    html = (GMAP_HTML.replace("__POINTS__", safe(points)).replace("__PENDING__", safe(pend))
+    html = (GMAP_HTML.replace("__POINTS__", safe(points))
             .replace("__COLOURS__", safe(colours)).replace("__CENTRE__", safe({"lat": AUCKLAND["lat"], "lng": AUCKLAND["lon"]}))
             .replace("__KEY__", urllib.parse.quote(key)))
     components.html(html, height=height)
