@@ -805,7 +805,9 @@ def nztm_to_latlon(e, n):
 def address_variants(address: str) -> list[str]:
     a = re.sub(r"\s+", " ", re.sub(r"\(.*?\)", " ", address or "")).strip(" ,.")
     no_unit = re.sub(r"^(?:unit|suite|level|lot)?\s*\w*\s*/\s*", "", a, flags=re.I)      # '3/4 Amokura St' -> '4 Amokura St'
-    return [v for v in dict.fromkeys([a, no_unit]) if v]
+    first_no = re.sub(r"^(\d+)[A-Za-z]?\s*[-\u2013]\s*\d+[A-Za-z]?\b", r"\1", no_unit)        # '11-19 Wairau Road' -> '11 Wairau Road'
+    street_only = re.sub(r"^\d+[A-Za-z]?\s*", "", first_no)                                  # last resort: the street + suburb
+    return [v for v in dict.fromkeys([a, no_unit, first_no, street_only]) if v]
 
 
 def geocode_google(address: str, key: str):
@@ -871,7 +873,7 @@ def locate(row, gkey: str = "", manual: str = ""):
 
 AUCKLAND = {"lat": -36.85, "lon": 174.76}   # default map centre
 
-GMAP_HTML = """
+GMAP_HTML = r"""
 <style>html,body{margin:0;height:100%;font-family:sans-serif} #map{height:100%;width:100%}
 #msg{display:none;position:absolute;top:8px;left:8px;right:8px;z-index:5;background:#fef3c7;color:#92400e;padding:8px 12px;border-radius:8px;font-size:13px}</style>
 <div id="map"></div><div id="msg"></div>
@@ -896,10 +898,30 @@ function initMap() {
   let left = PENDING.length, failed = [];
   if (!left) return fit();
   const gc = new google.maps.Geocoder();
-  PENDING.forEach((p, i) => setTimeout(() => gc.geocode({address: p.address + ', Auckland, New Zealand', region: 'nz'}, (res, st) => {
-    if (st === 'OK') add(p, res[0].geometry.location); else failed.push(p.id + ' (' + st + ')');
-    if (--left === 0) { fit(); if (failed.length) note('Browser lookup failed for: ' + esc(failed.join(', '))); }
-  }), i * 250));
+  const variants = a => { const x = a.replace(/\(.*?\)/g, ' ').replace(/\s+/g, ' ').trim().replace(/[ ,.]+$/, '');
+    const first = x.replace(/^(\d+)[A-Za-z]?\s*[-\u2013]\s*\d+[A-Za-z]?\b/, '$1');
+    return [...new Set([x, first, first.replace(/^\d+[A-Za-z]?\s*/, '')])]; };
+  const viaGoogle = q => new Promise(res => gc.geocode({address: q + ', Auckland, New Zealand', region: 'nz'},
+      (r, st) => res(st === 'OK' ? {pos: r[0].geometry.location, how: 'Google (browser)'} : {err: st})));
+  const viaOSM = q => fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=nz&q=' +
+      encodeURIComponent(q + ', Auckland, New Zealand')).then(r => r.json())
+      .then(h => h.length ? {pos: {lat: +h[0].lat, lng: +h[0].lon}, how: 'OpenStreetMap (browser)'} : {err: 'no match'})
+      .catch(e => ({err: 'OSM ' + e}));
+  (async () => {
+    for (const p of PENDING) {
+      let hit = null, errs = [];
+      for (const q of variants(p.address)) {
+        for (const f of [viaGoogle, viaOSM]) {
+          const r = await f(q); if (r.pos) { hit = r; break; } errs.push(r.err);
+          await new Promise(t => setTimeout(t, f === viaOSM ? 1100 : 150));
+        }
+        if (hit) break;
+      }
+      if (hit) { p.basis = 'Memo site address, ' + hit.how; add(p, hit.pos); }
+      else failed.push(p.id + ' (' + [...new Set(errs)].join('/') + ')');
+    }
+    fit(); if (failed.length) note('Browser lookup failed for: ' + esc(failed.join(', ')));
+  })();
 }
 </script>
 <script async src="https://maps.googleapis.com/maps/api/js?key=__KEY__&callback=initMap&loading=async"></script>
