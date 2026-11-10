@@ -1202,7 +1202,9 @@ df["lat"], df["lon"], df["location_basis"], df["location_note"] = zip(
     *[loc_cache[(i, gmaps_key, manual.get(i, ""))] for i in df.consent_id])
 show = lambda v: NOT_FOUND if v is None or (isinstance(v, float) and pd.isna(v)) else v
 
-f_status = st.sidebar.multiselect("Status", sorted(df.status.unique()), default=sorted(df.status.unique()))
+STATUS_OPTIONS = ["Expired", "Active", NOT_FOUND]                     # always offered, even when no consent has that status
+f_status = st.sidebar.multiselect("Status", STATUS_OPTIONS, default=STATUS_OPTIONS,
+                                  format_func=lambda v: "Unknown" if v == NOT_FOUND else v)
 f_class = st.sidebar.multiselect("Activity class", sorted(df.class_label.unique()), default=sorted(df.class_label.unique()))
 f_zone = st.sidebar.multiselect("Air quality area", sorted(df.zone_label.unique()), default=sorted(df.zone_label.unique()))
 exp_years = [d.year for d in df.date_expiry if isinstance(d, date)]
