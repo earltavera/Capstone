@@ -35,7 +35,7 @@ MONTHS = "January|February|March|April|May|June|July|August|September|October|No
 DATE_TXT = rf"(\d{{1,2}})\s*(?:st|nd|rd|th)?\s+(?:of\s+)?({MONTHS})\s+(\d{{4}})"   # 3rd November 2017 / 18th of August 2036
 DATE_NUM = r"(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{4}|\d{2})\b"                         # 29 / 10 / 2018, 4/4/24
 # ---- PASTE YOUR GOOGLE MAPS API KEY BETWEEN THE QUOTES (Maps JavaScript API + Geocoding API must be enabled) ----
-GOOGLE_MAPS_API_KEY = "AIzaSyBl2_jHtCPQBaZ372QKgiPt39p-_6wYlW4"
+GOOGLE_MAPS_API_KEY = ""
 NOT_FOUND = "Not found"
 CLASS_RANK = {"Controlled": 1, "Restricted discretionary": 2, "Discretionary": 3, "Non-complying": 4, "Prohibited": 5}
 
@@ -276,6 +276,14 @@ def norm_aq(txt: str) -> str:
     return t[:1].upper() + t[1:]
 
 
+def clean_site_address(raw):
+    """'Site address:' value. Handles '(generator located at 21 Shaddock St)' (label empty, address in brackets on the next line)
+    and drops a trailing '(note)' from 'Street, Suburb (note)'."""
+    raw = (raw or "").strip()
+    m = re.match(r"^\(.*?\bat\s+(.+?)\)?$", raw)
+    return (m.group(1) if m else re.sub(r"\s*\(.*?\)\s*$", "", raw)).strip(" .,") or None
+
+
 def parse_memo(lines) -> dict:
     whole = flat(lines)
     g = lambda pat: (m.group(1).strip() if (m := re.search(pat, "\n".join(lines))) else None)
@@ -285,7 +293,7 @@ def parse_memo(lines) -> dict:
     frm = re.search(r"From:\s*([^,\n]+),\s*([^\n]+)", "\n".join(lines))
     return dict(
         applicant=g(r"Applicant(?:'s|’s)? ?(?:name)?:\s*(.+)") or fallback_applicant(lines),
-        site_address=re.sub(r"\s*\(.*?\)\s*$", "", g(r"Site address:\s*(.+)") or "") or fallback_address(lines),
+        site_address=clean_site_address(g(r"Site address:\s*(.+)")) or fallback_address(lines),
         years_granted=granted, years_requested=requested,
         rules=triggered_rules(lines) or fallback_rules(lines),
         air_quality_area=norm_aq(aq.group(0)) if aq else None,
@@ -1281,10 +1289,13 @@ else:
     fig.update_layout(map_style="carto-positron", margin={"r": 0, "t": 0, "l": 0, "b": 0}, legend_title_text="")
     st.plotly_chart(fig, width="stretch")
 
+st.caption("Consents by status in the current filter: " + ", ".join(f"{k}: {v}" for k, v in fdf.status.value_counts().items()) +
+           " | placed by the server lookup: " + ", ".join(f"{k}: {v}" for k, v in located.status.value_counts().items()) +
+           ". Anything else is looked up in your browser (or is listed below with the reason).")
 unplaced = fdf[fdf.lat.isna()]
 if not unplaced.empty:
     with st.expander(f"{len(unplaced)} consent(s) not placed by the server lookup - see why / enter a location", expanded=not gmaps_key):
-        st.dataframe(unplaced[["consent_id", "site_address", "location_note"]].fillna(NOT_FOUND), width="stretch", hide_index=True)
+        st.dataframe(unplaced[["consent_id", "status", "site_address", "location_note"]].fillna(NOT_FOUND), width="stretch", hide_index=True)
         with st.form("manual_loc_form"):
             vals = {cid: st.text_input(cid, value=manual.get(cid, ""), placeholder="Street address, or lat, lon  e.g. -36.93, 174.80")
                     for cid in unplaced.consent_id}
