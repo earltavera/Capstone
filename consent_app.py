@@ -1184,8 +1184,6 @@ if not rows:
 st.sidebar.header("Filters")
 as_at = st.sidebar.date_input("Status as of", date.today())
 gmaps_key = GOOGLE_MAPS_API_KEY.strip()
-if st.sidebar.button("Retry failed map lookups"):
-    st.session_state["loc"] = {}
 df = pd.DataFrame(rows)
 df["status"] = df.date_expiry.map(lambda d: NOT_FOUND if d is None or pd.isna(d) else ("Active" if d >= as_at else "Expired"))
 df["expiry_year"] = df.date_expiry.map(lambda d: str(d.year) if isinstance(d, date) else NOT_FOUND)
@@ -1298,6 +1296,9 @@ else:
     fig.update_layout(map_style="carto-positron", margin={"r": 0, "t": 0, "l": 0, "b": 0}, legend_title_text="")
     st.plotly_chart(fig, width="stretch")
 
+if st.button("🔄 Retry failed map lookups", type="primary", help="Clears the saved lookup results and tries every address again."):
+    st.session_state["loc"] = {}
+    st.rerun()
 st.caption("Consents by status in the current filter: " + ", ".join(f"{k}: {v}" for k, v in fdf.status.value_counts().items()) +
            " | placed by the server lookup: " + ", ".join(f"{k}: {v}" for k, v in located.status.value_counts().items()) +
            ". Anything else is looked up in your browser (or is listed below with the reason).")
