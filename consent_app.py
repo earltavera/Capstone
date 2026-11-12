@@ -1,5 +1,5 @@
 """
-Air Discharge Consents Analytics (Streamlit)
+Air Discharge Consent Analytics (Streamlit)
 
 Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab anthropic
       streamlit run consent_app.py
@@ -82,10 +82,20 @@ class FolderFile(io.BytesIO):
 def scan_folder(folder: str, recursive: bool = False):
     """(sorted list of PDF paths, error text or None). Matches .pdf in any letter case."""
     from pathlib import Path
+    folder = (folder or "").strip().strip("'\"").strip()          # pasted paths often carry quotes or trailing spaces
     try:
         p = Path(folder).expanduser()
         if not p.is_dir():
-            return [], f"'{folder}' is not a folder on the machine running this app."
+            ok = p
+            while not ok.exists() and ok != ok.parent:            # deepest part of the path that does exist
+                ok = ok.parent
+            where = f" The deepest part that exists is '{ok}'" if ok != p else ""
+            try:
+                subs = sorted(d.name for d in ok.iterdir() if d.is_dir())[:12] if ok.is_dir() else []
+            except OSError:
+                subs = []
+            hint = f", which contains these folders: {', '.join(subs)}." if where and subs else ("." if where else "")
+            return [], f"'{folder}' is not a folder on the machine running this app.{where}{hint}"
         it = p.rglob("*") if recursive else p.glob("*")
         return sorted(f for f in it if f.is_file() and f.suffix.lower() == ".pdf"), None
     except OSError as e:
@@ -1283,7 +1293,7 @@ def render_header():
       <div class="main">
         <div class="left">
           <img class="logo" src="data:image/png;base64,{LOGO_B64}" alt="Auckland Council">
-          <div><h1>Air Discharge Consents Analytics</h1>
+          <div><h1>Air Discharge Consent Analytics</h1>
           <p class="sub">Auckland Unitary Plan air discharge consents - read straight from the decision and memo PDFs.</p></div>
         </div>
         <span class="chip">Conditions: consent PDF</span><span class="chip">Years, rules, details: memo PDF</span>
@@ -1310,7 +1320,7 @@ def render_header():
     components.html(html, height=210)
 
 
-st.set_page_config(page_title="Air Discharge Consents Analytics", page_icon=None, layout="wide")
+st.set_page_config(page_title="Air Discharge Consent Analytics", page_icon=None, layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
 render_header()
 try:
