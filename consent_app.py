@@ -453,6 +453,8 @@ def build_row(cid, consent_lines, memo_lines) -> dict:
         specialist=m.get("specialist"), nztm=find_nztm(consent_lines or [], memo_lines or []), missing=missing,
         discharge_types=list(dict.fromkeys(dtypes)), discharge_primary=Counter(dtypes).most_common(1)[0][0] if dtypes else None,
         mitigation=sorted({x for c_ in conds for x in c_["mitigation"].split("; ") if x}),
+        # full text of both PDFs (headers/footers removed), used only by the chatbot's Deep mode
+        docs_text=dict(consent="\n".join(consent_lines or []), memo="\n".join(memo_lines or [])),
     )
 
 
@@ -774,6 +776,116 @@ def ask_llm(q: str, df: pd.DataFrame, history, api_key: str, model: str, as_at: 
     return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
 
 
+# ------------------------------------------------------------------ Deep mode: Claude searches and reads the full PDF text
+# Unlike ask_llm (extracted data only), Deep mode gives Claude tools to search and read the full text of EVERY uploaded
+# consent and memo PDF, and lets it keep exploring until it can answer. Slower and costlier per question, but it can
+# answer things the parser never extracted.
+AGENT_INSTRUCTIONS = """You answer questions about Auckland air discharge resource consents using ONLY (a) the extracted JSON data below and
+(b) the full text of the uploaded consent and memo PDFs, which you can explore with your tools.
+Method:
+- For anything beyond a simple field lookup, search the PDFs before answering. Search ALL consents unless the question names one,
+  try several wordings (synonyms, abbreviations, number formats), and read the surrounding text of the best hits.
+- The extracted JSON is a convenience and can be wrong or incomplete (it comes from pattern matching). If it conflicts with the PDF
+  text, trust the PDF text and say so.
+Rules:
+- Never use outside knowledge about these consents. If the PDFs do not contain the answer, say "Not found" - do not guess or infer.
+- Cite every claim as: DIS######## (consent or memo), plus the condition number or a short excerpt (under 25 words).
+- For counts, rankings or comparisons, name the consents you counted and say which ones you checked.
+- 'status' is Active/Expired as of the date given below. Discharge types and mitigation measures in the JSON are keyword-based groupings.
+- Be concise. Use a short table only when comparing several consents. Plain language, no preamble."""
+
+AGENT_TOOLS = [
+    {"name": "list_consents",
+     "description": "List every uploaded consent id with its applicant and the size (characters) of its consent and memo text.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "search_text",
+     "description": "Case-insensitive regex search across the FULL text of all consent and memo PDFs (or one consent). Returns, per "
+                    "document, the number of matches and a few snippets with character offsets you can pass to read_document.",
+     "input_schema": {"type": "object", "properties": {
+         "pattern": {"type": "string", "description": "Python regular expression, e.g. 'odour|offensive' or 'stack height'"},
+         "consent_id": {"type": "string", "description": "Optional DIS######## to search only that consent"},
+         "doc": {"type": "string", "enum": ["consent", "memo"], "description": "Optional: search only the consent or only the memo"}},
+         "required": ["pattern"]}},
+    {"name": "read_document",
+     "description": "Read part of one document's full text (up to 15000 characters per call). Use offsets from search_text.",
+     "input_schema": {"type": "object", "properties": {
+         "consent_id": {"type": "string"}, "doc": {"type": "string", "enum": ["consent", "memo"]},
+         "start": {"type": "integer", "description": "character offset, default 0"},
+         "length": {"type": "integer", "description": "characters to read, default 8000, max 15000"}},
+         "required": ["consent_id", "doc"]}},
+]
+
+
+def _agent_tool(name: str, args: dict, recs: dict) -> str:
+    """Run one tool call for the Deep-mode agent. `recs` maps consent_id -> row dict (with docs_text)."""
+    if name == "list_consents":
+        return json.dumps([dict(consent_id=c, applicant=_clean(r["applicant"]), consent_chars=len(r["docs_text"]["consent"]),
+                                memo_chars=len(r["docs_text"]["memo"])) for c, r in recs.items()])
+    if name == "search_text":
+        try:
+            pat = re.compile(args.get("pattern", ""), re.I)
+        except re.error as e:
+            return f"Invalid regular expression: {e}"
+        out, shown = [], 0
+        for cid, r in recs.items():
+            if args.get("consent_id") and cid != args["consent_id"].strip().upper():
+                continue
+            for kind, txt in r["docs_text"].items():
+                if args.get("doc") and kind != args["doc"]:
+                    continue
+                ms = list(pat.finditer(txt))
+                if not ms:
+                    continue
+                snippets = []
+                for m in ms[:5]:                                    # a few snippets per document keeps every consent represented
+                    if shown >= 80:
+                        break
+                    snippets.append(dict(offset=m.start(), text=txt[max(0, m.start() - 150): m.end() + 150].replace("\n", " ")))
+                    shown += 1
+                out.append(dict(consent_id=cid, doc=kind, matches=len(ms), snippets=snippets))
+        if not out:
+            return "No matches. Try other wording, a shorter pattern, or search without consent_id/doc."
+        return json.dumps(out) + ("\n(Snippet limit reached; narrow the pattern or name a consent.)" if shown >= 80 else "")
+    if name == "read_document":
+        r = recs.get(str(args.get("consent_id", "")).strip().upper())
+        if not r or args.get("doc") not in ("consent", "memo"):
+            return "Unknown consent_id or doc. Use list_consents to see what is available."
+        txt, start = r["docs_text"][args["doc"]], max(0, int(args.get("start") or 0))
+        n = min(int(args.get("length") or 8000), 15000)
+        chunk = txt[start:start + n]
+        return (chunk or "(nothing at that offset)") + (f"\n[...continues; next start={start + n} of {len(txt)}]" if start + n < len(txt) else "")
+    return f"Unknown tool: {name}"
+
+
+def ask_llm_deep(q: str, df: pd.DataFrame, history, api_key: str, model: str, as_at: date, max_steps: int = 14) -> str:
+    """Claude explores the full PDF text with tools (search / read) before answering. Each step is one API call."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+    recs = {r["consent_id"]: r for r in df.to_dict("records")}
+    system = [{"type": "text", "text": AGENT_INSTRUCTIONS + f"\nStatus date: {as_at.isoformat()}."},
+              {"type": "text", "text": "EXTRACTED DATA (JSON):\n" + llm_context(df, 300), "cache_control": {"type": "ephemeral"}}]
+    msgs = [{"role": who, "content": msg} for who, msg, _ in history[-8:]] + [{"role": "user", "content": q}]
+    for _ in range(max_steps):
+        resp = client.messages.create(model=model, max_tokens=3000, system=system, tools=AGENT_TOOLS, messages=msgs)
+        if resp.stop_reason != "tool_use":
+            return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        msgs.append({"role": "assistant", "content": resp.content})
+        results = []
+        for b in resp.content:
+            if getattr(b, "type", "") == "tool_use":
+                try:
+                    res = _agent_tool(b.name, b.input or {}, recs)
+                except Exception as e:                              # a bad tool call should not end the whole answer
+                    res = f"Tool error: {type(e).__name__}: {e}"
+                results.append({"type": "tool_result", "tool_use_id": b.id, "content": res})
+        msgs.append({"role": "user", "content": results})
+    # step limit reached: ask for the best answer from what was gathered, without further tool use
+    msgs.append({"role": "user", "content": "Step limit reached. Answer now from what you have found, and say what you did not manage to check."})
+    resp = client.messages.create(model=model, max_tokens=1500, system=system, tools=AGENT_TOOLS,
+                                  tool_choice={"type": "none"}, messages=msgs)
+    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+
+
 def rule_confident(q: str, ans: str) -> bool:
     """False when the rule-based bot gave up / only found a loose match, or the question needs reasoning, not lookup."""
     gave_up = ans.startswith(("Ask me about", "I couldn't find", "Closest match", "No condition text"))
@@ -783,11 +895,14 @@ def rule_confident(q: str, ans: str) -> bool:
 def answer(q: str, df: pd.DataFrame, history, mode: str, api_key: str, model: str, as_at: date):
     """Hybrid chatbot. Returns (markdown, table or None, source label)."""
     ans, tbl = ask(q, df)
-    if mode == "Rule-based only" or (mode.startswith("Hybrid") and rule_confident(q, ans)):
+    deep = mode.startswith("Deep")                               # Deep: Claude searches/reads the full PDF text with tools
+    if not deep and (mode == "Rule-based only" or (mode.startswith("Hybrid") and rule_confident(q, ans))):
         return ans, tbl, "rule-based lookup"
     if not api_key:
         return ans + "\n\n*Add an Anthropic API key in the sidebar to let the AI assistant answer this kind of question.*", tbl, "rule-based lookup"
     try:
+        if deep:
+            return ask_llm_deep(q, df, history, api_key, model, as_at), None, f"AI deep search of the PDFs ({model})"
         return ask_llm(q, df, history, api_key, model, as_at), None, f"AI assistant ({model})"
     except ImportError as e:
         import traceback
@@ -1228,8 +1343,10 @@ except ImportError:
 
 st.sidebar.divider()
 st.sidebar.subheader("Chatbot")
-chat_mode = st.sidebar.radio("Mode", ["Hybrid (recommended)", "Rule-based only", "AI only"],
-                             help="Hybrid: exact lookups are answered instantly from the data; comparisons, summaries and open questions go to the AI assistant.")
+chat_mode = st.sidebar.radio("Mode", ["Hybrid (recommended)", "Deep (reads the PDFs)", "Rule-based only", "AI only"],
+                             help="Hybrid: exact lookups are answered instantly from the data; comparisons, summaries and open questions go to the AI assistant. "
+                                  "Deep: every question goes to the AI, which searches and reads the full text of all uploaded PDFs before answering "
+                                  "(slower, uses more API credits, sends PDF text to Anthropic).")
 try:
     _secret_key = st.secrets.get("ANTHROPIC_API_KEY", "")
 except Exception:
@@ -1237,7 +1354,8 @@ except Exception:
 api_key = _secret_key or os.environ.get("ANTHROPIC_API_KEY", "") or st.sidebar.text_input(
     "Anthropic API key", type="password", help="Or set ANTHROPIC_API_KEY in .streamlit/secrets.toml or the environment.")
 llm_model = st.sidebar.selectbox("AI model", LLM_MODELS)
-st.sidebar.caption("The AI assistant sends the extracted consent data and your question to Anthropic's API. "
+st.sidebar.caption("The AI assistant sends the extracted consent data and your question to Anthropic's API. In Deep mode it also reads "
+                   "the full text of the uploaded PDFs (the parts it searches or opens are sent to Anthropic). "
                    "Rule-based answers stay on this machine.")
 
 # ---- KPI cards
@@ -1511,7 +1629,8 @@ st.caption("Ask about anything in the Register or Consent summaries tabs, e.g. *
            "*which consents are active*, *anything in Henderson*, *more than 15 years*, *what does rule A54 mean*, "
            "*conditions about odour for DIS60316131*, *average years granted*. "
            "Exact lookups are computed from the extracted data on this machine; comparisons, summaries and open questions "
-           "go to the AI assistant (needs an API key in the sidebar), which only sees the extracted data.")
+           "go to the AI assistant (needs an API key in the sidebar), which sees only the extracted data. "
+           "Choose **Deep (reads the PDFs)** in the sidebar to let the assistant search and read the full text of every uploaded PDF before it answers.")
 if st.session_state.get("chat_key") != key:
     st.session_state["chat"], st.session_state["chat_key"] = [], key
 for who, msg, tbl in st.session_state["chat"]:
