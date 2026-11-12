@@ -79,10 +79,53 @@ class FolderFile(io.BytesIO):
         self.name, self.size = path.name, len(data)
 
 
+def clean_path(folder: str) -> str:
+    """A pasted path as typed: drops quotes / trailing spaces and the backslashes a Mac or Linux terminal adds before spaces."""
+    folder = (folder or "").strip().strip("'\"").strip()
+    return folder.replace("\\ ", " ") if os.name != "nt" else folder
+
+
+def pick_folder(start: str = ""):
+    """Open the computer's own folder-picker window. Returns (path or None, message or None).
+    Works when the app runs on the user's own computer; on a server with no screen it says so and the user pastes the path instead."""
+    import subprocess
+    import sys
+    code = ("import tkinter as tk\nfrom tkinter import filedialog\nr = tk.Tk()\nr.withdraw()\n"
+            "try:\n    r.attributes('-topmost', True)\nexcept Exception:\n    pass\n"
+            f"print(filedialog.askdirectory(title='Choose the folder with the consent and memo PDFs', initialdir={start!r} or None) or '')")
+    try:
+        res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        return None, f"Could not open a folder window ({type(e).__name__}). Paste the folder path instead."
+    path = res.stdout.strip().splitlines()[-1] if res.stdout.strip() else ""
+    if res.returncode != 0:
+        return None, "This computer cannot open a folder window from here (tkinter is missing or there is no screen). Paste the folder path instead."
+    return (path or None), None
+
+
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".consent_analytics.json")      # remembers only the last folder path
+
+
+def load_saved_folder() -> str:
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            return json.load(f).get("folder", "")
+    except Exception:
+        return ""
+
+
+def save_folder(folder: str):
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({"folder": folder}, f)
+    except OSError:
+        pass
+
+
 def scan_folder(folder: str, recursive: bool = False):
     """(sorted list of PDF paths, error text or None). Matches .pdf in any letter case."""
     from pathlib import Path
-    folder = (folder or "").strip().strip("'\"").strip()          # pasted paths often carry quotes or trailing spaces
+    folder = clean_path(folder)                                    # pasted paths often carry quotes or trailing spaces
     try:
         p = Path(folder).expanduser()
         if not p.is_dir():
@@ -1336,33 +1379,54 @@ try:
     _default_dir = _default_dir or st.secrets.get("CONSENT_PDF_DIR", "")
 except Exception:
     pass
+_default_dir = _default_dir or load_saved_folder()                  # otherwise the folder used last time
 use_folder = st.sidebar.checkbox("Load PDFs automatically from a folder", value=bool(_default_dir),
-                                 help="Reads every .pdf in the folder, on the machine that runs this app. You can also set CONSENT_PDF_DIR "
-                                      "(environment variable or .streamlit/secrets.toml) to pre-fill the folder.")
+                                 help="Reads every .pdf in the folder, on the machine that runs this app, and keeps checking it for new or "
+                                      "changed PDFs. Choose the folder with Browse, or paste its path. The last folder used is remembered.")
 folder_files, folder_sig = [], ()
 if use_folder:
-    folder = st.sidebar.text_input("Folder path", value=_default_dir, placeholder=r"C:\Consents   or   /home/me/consents")
+    st.session_state.setdefault("folder_path", _default_dir)
+
+    def _browse():                                                  # runs before the page redraws, so it may set the text box
+        path, msg = pick_folder(clean_path(st.session_state.get("folder_path", "")))
+        if path:
+            st.session_state["folder_path"] = path
+        st.session_state["browse_msg"] = msg
+
+    def _rescan():
+        st.session_state.pop("folder_sig", None)                    # forgets what was read, so every PDF is read again
+
+    folder = clean_path(st.sidebar.text_input("Folder path (paste it here, or use Browse)", key="folder_path",
+                                              placeholder=r"C:\Consents   or   /Users/me/Documents/Consents"))
+    b1, b2 = st.sidebar.columns(2)
+    b1.button("📂 Browse...", on_click=_browse, help="Opens this computer's folder window")
+    b2.button("🔄 Rescan now", on_click=_rescan, help="Reads every PDF in the folder again right now")
+    if msg := st.session_state.pop("browse_msg", None):
+        st.sidebar.warning(msg)
     recursive = st.sidebar.checkbox("Include subfolders", value=False)
     watch_secs = st.sidebar.select_slider("Check for new or changed PDFs", options=[0, 15, 30, 60, 300], value=30,
                                           format_func=lambda s: "only when I interact" if s == 0 else f"every {s} s")
-    st.sidebar.button("🔄 Rescan folder now")                      # any click reruns the app, which rescans
-    paths, folder_err = scan_folder(folder, recursive) if folder.strip() else ([], "Enter a folder path.")
+    paths, folder_err = scan_folder(folder, recursive) if folder else ([], "Enter or browse to a folder.")
     if folder_err:
         st.sidebar.warning(folder_err)
     else:
-        folder_sig = folder_signature(paths)
+        if folder != st.session_state.get("saved_folder"):          # remember it for the next time the app starts
+            save_folder(folder)
+            st.session_state["saved_folder"] = folder
+        folder_sig = (folder, recursive) + folder_signature(paths)
         if folder_sig != st.session_state.get("folder_sig"):       # only read the PDFs again when something in the folder changed
             with st.spinner(f"Reading {len(paths)} PDF(s) from the folder..."):
                 st.session_state["folder_files"] = [FolderFile(p) for p in paths]
             st.session_state["folder_sig"] = folder_sig
         folder_files = st.session_state["folder_files"]
         st.sidebar.caption(f"{len(folder_files)} PDF(s) found in the folder.")
-    if watch_secs and hasattr(st, "fragment"):
+    if watch_secs and hasattr(st, "fragment") and not folder_err:
         @st.fragment(run_every=watch_secs)
         def _watch_folder(folder=folder, recursive=recursive):
             ps, err = scan_folder(folder, recursive)
-            if not err and folder_signature(ps) != st.session_state.get("folder_sig"):
+            if not err and (folder, recursive) + folder_signature(ps) != st.session_state.get("folder_sig"):
                 st.rerun()                                         # a PDF was added, removed or changed: reload everything
+            st.caption(f"Last checked {datetime.now():%H:%M:%S}")
         with st.sidebar:
             _watch_folder()
 
