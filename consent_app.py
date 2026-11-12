@@ -1,11 +1,12 @@
 """
-Air Discharge Consents Analytics (Streamlit)
+Air Discharge Consent Analytics (Streamlit)
 
 Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab anthropic
       streamlit run consent_app.py
 
-Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs).
-Nothing is cached between runs. A value that is not in the uploaded PDFs is reported as "Not found"
+Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs), or tick
+"Load PDFs automatically from a folder" in the sidebar (or set CONSENT_PDF_DIR) and every PDF in that folder is read
+automatically, and re-read when PDFs are added, removed or changed. Nothing is cached between runs. A value that is not in the uploaded PDFs is reported as "Not found"
 (and listed on the Data quality tab), never guessed. Online calls: the map (NZTM in the PDFs, else the memo's site address
 is geocoded with Google, falling back to OpenStreetMap).
 
@@ -63,9 +64,44 @@ FOOTER = re.compile(
 
 def read_pdf(file) -> list[str]:
     """Text lines of a PDF with page headers/footers removed."""
+    if hasattr(file, "seek"):
+        file.seek(0)                                   # the same file object may be read more than once
     with pdfplumber.open(file) as pdf:
         text = "\n".join((p.extract_text() or "") for p in pdf.pages)
     return [ln.strip() for ln in text.splitlines() if not FOOTER.match(ln.strip())]
+
+
+# ---- PDFs picked up automatically from a folder (same shape as a Streamlit uploaded file: .name, .size, readable)
+class FolderFile(io.BytesIO):
+    def __init__(self, path):
+        data = path.read_bytes()
+        super().__init__(data)
+        self.name, self.size = path.name, len(data)
+
+
+def scan_folder(folder: str, recursive: bool = False):
+    """(sorted list of PDF paths, error text or None). Matches .pdf in any letter case."""
+    from pathlib import Path
+    try:
+        p = Path(folder).expanduser()
+        if not p.is_dir():
+            return [], f"'{folder}' is not a folder on the machine running this app."
+        it = p.rglob("*") if recursive else p.glob("*")
+        return sorted(f for f in it if f.is_file() and f.suffix.lower() == ".pdf"), None
+    except OSError as e:
+        return [], f"Cannot read '{folder}': {e}"
+
+
+def folder_signature(paths) -> tuple:
+    """Cheap change detector: (name, size, modified time) of every PDF, without reading the files."""
+    out = []
+    for p in paths:
+        try:
+            s = p.stat()
+            out.append((str(p), s.st_size, s.st_mtime_ns))
+        except OSError:
+            pass
+    return tuple(out)
 
 
 def flat(lines) -> str:
@@ -1247,7 +1283,7 @@ def render_header():
       <div class="main">
         <div class="left">
           <img class="logo" src="data:image/png;base64,{LOGO_B64}" alt="Auckland Council">
-          <div><h1>Air Discharge Consents Analytics</h1>
+          <div><h1>Air Discharge Consent Analytics</h1>
           <p class="sub">Auckland Unitary Plan air discharge consents - read straight from the decision and memo PDFs.</p></div>
         </div>
         <span class="chip">Conditions: consent PDF</span><span class="chip">Years, rules, details: memo PDF</span>
@@ -1274,7 +1310,7 @@ def render_header():
     components.html(html, height=210)
 
 
-st.set_page_config(page_title="Air Discharge Consents Analytics", page_icon=None, layout="wide")
+st.set_page_config(page_title="Air Discharge Consent Analytics", page_icon=None, layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
 render_header()
 try:
@@ -1283,12 +1319,51 @@ except ImportError:
     st.error("This dashboard needs plotly: run `pip install plotly` and restart the app.")
     st.stop()
 
-files = st.file_uploader("Upload consent and memo PDFs (pairs are matched on the DIS number)", type="pdf", accept_multiple_files=True)
+# ---- PDF source: a folder that is read automatically, and/or manual upload
+st.sidebar.header("PDF source")
+_default_dir = os.environ.get("CONSENT_PDF_DIR", "")
+try:
+    _default_dir = _default_dir or st.secrets.get("CONSENT_PDF_DIR", "")
+except Exception:
+    pass
+use_folder = st.sidebar.checkbox("Load PDFs automatically from a folder", value=bool(_default_dir),
+                                 help="Reads every .pdf in the folder, on the machine that runs this app. You can also set CONSENT_PDF_DIR "
+                                      "(environment variable or .streamlit/secrets.toml) to pre-fill the folder.")
+folder_files, folder_sig = [], ()
+if use_folder:
+    folder = st.sidebar.text_input("Folder path", value=_default_dir, placeholder=r"C:\Consents   or   /home/me/consents")
+    recursive = st.sidebar.checkbox("Include subfolders", value=False)
+    watch_secs = st.sidebar.select_slider("Check for new or changed PDFs", options=[0, 15, 30, 60, 300], value=30,
+                                          format_func=lambda s: "only when I interact" if s == 0 else f"every {s} s")
+    st.sidebar.button("🔄 Rescan folder now")                      # any click reruns the app, which rescans
+    paths, folder_err = scan_folder(folder, recursive) if folder.strip() else ([], "Enter a folder path.")
+    if folder_err:
+        st.sidebar.warning(folder_err)
+    else:
+        folder_sig = folder_signature(paths)
+        if folder_sig != st.session_state.get("folder_sig"):       # only read the PDFs again when something in the folder changed
+            with st.spinner(f"Reading {len(paths)} PDF(s) from the folder..."):
+                st.session_state["folder_files"] = [FolderFile(p) for p in paths]
+            st.session_state["folder_sig"] = folder_sig
+        folder_files = st.session_state["folder_files"]
+        st.sidebar.caption(f"{len(folder_files)} PDF(s) found in the folder.")
+    if watch_secs and hasattr(st, "fragment"):
+        @st.fragment(run_every=watch_secs)
+        def _watch_folder(folder=folder, recursive=recursive):
+            ps, err = scan_folder(folder, recursive)
+            if not err and folder_signature(ps) != st.session_state.get("folder_sig"):
+                st.rerun()                                         # a PDF was added, removed or changed: reload everything
+        with st.sidebar:
+            _watch_folder()
+
+uploaded = st.file_uploader("Upload consent and memo PDFs (pairs are matched on the DIS number)", type="pdf", accept_multiple_files=True)
+files = list({f.name: f for f in [*folder_files, *uploaded]}.values())      # an uploaded file replaces a folder file of the same name
 if not files:
-    st.info("Upload the consent and memo PDFs to begin. Nothing is kept between runs.")
+    st.info("Upload the consent and memo PDFs to begin, or tick **Load PDFs automatically from a folder** in the sidebar. "
+            "Nothing is kept between runs.")
     st.stop()
 
-key = tuple((f.name, f.size) for f in files)
+key = (tuple((f.name, f.size) for f in files), folder_sig)
 if st.session_state.get("key") != key:
     st.session_state["rows"], st.session_state["key"] = analyse(files), key
 rows = st.session_state["rows"]
