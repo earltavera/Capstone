@@ -1,12 +1,11 @@
 """
-Air Discharge Consent Analytics (Streamlit)
+Air Discharge Consents Analytics (Streamlit)
 
 Run:  pip install streamlit pdfplumber pandas plotly pyproj openpyxl reportlab anthropic
       streamlit run consent_app.py
 
-Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs), or tick
-"Load PDFs automatically from a folder" in the sidebar (or set CONSENT_PDF_DIR) and every PDF in that folder is read
-automatically, and re-read when PDFs are added, removed or changed. Nothing is cached between runs. A value that is not in the uploaded PDFs is reported as "Not found"
+Every run starts empty: upload the <ID>_Consent.pdf and <ID>_Memo.pdf files (any number of pairs).
+Nothing is cached between runs. A value that is not in the uploaded PDFs is reported as "Not found"
 (and listed on the Data quality tab), never guessed. Online calls: the map (NZTM in the PDFs, else the memo's site address
 is geocoded with Google, falling back to OpenStreetMap).
 
@@ -64,104 +63,9 @@ FOOTER = re.compile(
 
 def read_pdf(file) -> list[str]:
     """Text lines of a PDF with page headers/footers removed."""
-    if hasattr(file, "seek"):
-        file.seek(0)                                   # the same file object may be read more than once
     with pdfplumber.open(file) as pdf:
         text = "\n".join((p.extract_text() or "") for p in pdf.pages)
     return [ln.strip() for ln in text.splitlines() if not FOOTER.match(ln.strip())]
-
-
-# ---- PDFs picked up automatically from a folder (same shape as a Streamlit uploaded file: .name, .size, readable)
-class FolderFile(io.BytesIO):
-    def __init__(self, path):
-        data = path.read_bytes()
-        super().__init__(data)
-        self.name, self.size = path.name, len(data)
-
-
-def clean_path(folder: str) -> str:
-    """A pasted path as typed: drops quotes / trailing spaces and the backslashes a Mac or Linux terminal adds before spaces."""
-    folder = (folder or "").strip().strip("'\"").strip()
-    return folder.replace("\\ ", " ") if os.name != "nt" else folder
-
-
-def pick_folder(start: str = ""):
-    """Open the computer's own folder-picker window. Returns (path or None, message or None).
-    Works when the app runs on the user's own computer; on a server with no screen it says so and the user pastes the path instead."""
-    import subprocess
-    import sys
-    code = ("import tkinter as tk\nfrom tkinter import filedialog\nr = tk.Tk()\nr.withdraw()\n"
-            "try:\n    r.attributes('-topmost', True)\nexcept Exception:\n    pass\n"
-            f"print(filedialog.askdirectory(title='Choose the folder with the consent and memo PDFs', initialdir={start!r} or None) or '')")
-    try:
-        res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
-    except Exception as e:
-        return None, f"Could not open a folder window ({type(e).__name__}). Paste the folder path instead."
-    path = res.stdout.strip().splitlines()[-1] if res.stdout.strip() else ""
-    if res.returncode != 0:
-        return None, "This computer cannot open a folder window from here (tkinter is missing or there is no screen). Paste the folder path instead."
-    return (path or None), None
-
-
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".consent_analytics.json")      # remembers only the last folder path
-
-
-def load_saved_folder() -> str:
-    try:
-        with open(CONFIG_FILE, encoding="utf-8") as f:
-            return json.load(f).get("folder", "")
-    except Exception:
-        return ""
-
-
-def save_folder(folder: str):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump({"folder": folder}, f)
-    except OSError:
-        pass
-
-
-def scan_folder(folder: str, recursive: bool = False):
-    """(sorted list of PDF paths, error text or None). Matches .pdf in any letter case."""
-    from pathlib import Path
-    folder = clean_path(folder)                                    # pasted paths often carry quotes or trailing spaces
-    import platform
-    host = platform.system()
-    mac_path, win_path = folder.startswith("/Users/"), bool(re.match(r"^[A-Za-z]:[\\/]", folder))
-    if (mac_path and host != "Darwin") or (win_path and host != "Windows"):
-        return [], (f"This app is running on a {host} machine, not on your {'Mac' if mac_path else 'Windows'} computer, so it cannot see "
-                    f"'{folder}'. To load a folder automatically, run the app on your own computer (streamlit run ...). "
-                    "If the app is hosted online, use the upload box below and select all the PDFs.")
-    try:
-        p = Path(folder).expanduser()
-        if not p.is_dir():
-            ok = p
-            while not ok.exists() and ok != ok.parent:            # deepest part of the path that does exist
-                ok = ok.parent
-            where = f" The deepest part that exists is '{ok}'" if ok != p else ""
-            try:
-                subs = sorted(d.name for d in ok.iterdir() if d.is_dir())[:12] if ok.is_dir() else []
-            except OSError:
-                subs = []
-            hint = f", which contains these folders: {', '.join(subs)}." if where and subs else ("." if where else "")
-            return [], f"'{folder}' is not a folder on the machine running this app.{where}{hint}"
-        it = p.rglob("*") if recursive else p.glob("*")
-        return sorted(f for f in it if f.is_file() and f.suffix.lower() == ".pdf"), None
-    except OSError as e:
-        return [], f"Cannot read '{folder}': {e}"
-
-
-def folder_signature(paths) -> tuple:
-    """Cheap change detector: (name, size, modified time) of every PDF, without reading the files."""
-    out = []
-    for p in paths:
-        try:
-            s = p.stat()
-            out.append((str(p), s.st_size, s.st_mtime_ns))
-        except OSError:
-            pass
-    return tuple(out)
 
 
 def flat(lines) -> str:
@@ -1343,7 +1247,7 @@ def render_header():
       <div class="main">
         <div class="left">
           <img class="logo" src="data:image/png;base64,{LOGO_B64}" alt="Auckland Council">
-          <div><h1>Air Discharge Consent Analytics</h1>
+          <div><h1>Air Discharge Consents Analytics</h1>
           <p class="sub">Auckland Unitary Plan air discharge consents - read straight from the decision and memo PDFs.</p></div>
         </div>
         <span class="chip">Conditions: consent PDF</span><span class="chip">Years, rules, details: memo PDF</span>
@@ -1370,7 +1274,7 @@ def render_header():
     components.html(html, height=210)
 
 
-st.set_page_config(page_title="Air Discharge Consent Analytics", page_icon=None, layout="wide")
+st.set_page_config(page_title="Air Discharge Consents Analytics", page_icon=None, layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
 render_header()
 try:
@@ -1379,72 +1283,12 @@ except ImportError:
     st.error("This dashboard needs plotly: run `pip install plotly` and restart the app.")
     st.stop()
 
-# ---- PDF source: a folder that is read automatically, and/or manual upload
-st.sidebar.header("PDF source")
-_default_dir = os.environ.get("CONSENT_PDF_DIR", "")
-try:
-    _default_dir = _default_dir or st.secrets.get("CONSENT_PDF_DIR", "")
-except Exception:
-    pass
-_default_dir = _default_dir or load_saved_folder()                  # otherwise the folder used last time
-use_folder = st.sidebar.checkbox("Load PDFs automatically from a folder", value=bool(_default_dir),
-                                 help="Reads every .pdf in the folder, on the machine that runs this app, and keeps checking it for new or "
-                                      "changed PDFs. Choose the folder with Browse, or paste its path. The last folder used is remembered.")
-folder_files, folder_sig = [], ()
-if use_folder:
-    st.session_state.setdefault("folder_path", _default_dir)
-
-    def _browse():                                                  # runs before the page redraws, so it may set the text box
-        path, msg = pick_folder(clean_path(st.session_state.get("folder_path", "")))
-        if path:
-            st.session_state["folder_path"] = path
-        st.session_state["browse_msg"] = msg
-
-    def _rescan():
-        st.session_state.pop("folder_sig", None)                    # forgets what was read, so every PDF is read again
-
-    folder = clean_path(st.sidebar.text_input("Folder path (paste it here, or use Browse)", key="folder_path",
-                                              placeholder=r"C:\Consents   or   /Users/me/Documents/Consents"))
-    b1, b2 = st.sidebar.columns(2)
-    b1.button("📂 Browse...", on_click=_browse, help="Opens this computer's folder window")
-    b2.button("🔄 Rescan now", on_click=_rescan, help="Reads every PDF in the folder again right now")
-    if msg := st.session_state.pop("browse_msg", None):
-        st.sidebar.warning(msg)
-    recursive = st.sidebar.checkbox("Include subfolders", value=False)
-    watch_secs = st.sidebar.select_slider("Check for new or changed PDFs", options=[0, 15, 30, 60, 300], value=30,
-                                          format_func=lambda s: "only when I interact" if s == 0 else f"every {s} s")
-    paths, folder_err = scan_folder(folder, recursive) if folder else ([], "Enter or browse to a folder.")
-    if folder_err:
-        st.sidebar.warning(folder_err)
-    else:
-        if folder != st.session_state.get("saved_folder"):          # remember it for the next time the app starts
-            save_folder(folder)
-            st.session_state["saved_folder"] = folder
-        folder_sig = (folder, recursive) + folder_signature(paths)
-        if folder_sig != st.session_state.get("folder_sig"):       # only read the PDFs again when something in the folder changed
-            with st.spinner(f"Reading {len(paths)} PDF(s) from the folder..."):
-                st.session_state["folder_files"] = [FolderFile(p) for p in paths]
-            st.session_state["folder_sig"] = folder_sig
-        folder_files = st.session_state["folder_files"]
-        st.sidebar.caption(f"{len(folder_files)} PDF(s) found in the folder.")
-    if watch_secs and hasattr(st, "fragment") and not folder_err:
-        @st.fragment(run_every=watch_secs)
-        def _watch_folder(folder=folder, recursive=recursive):
-            ps, err = scan_folder(folder, recursive)
-            if not err and (folder, recursive) + folder_signature(ps) != st.session_state.get("folder_sig"):
-                st.rerun()                                         # a PDF was added, removed or changed: reload everything
-            st.caption(f"Last checked {datetime.now():%H:%M:%S}")
-        with st.sidebar:
-            _watch_folder()
-
-uploaded = st.file_uploader("Upload consent and memo PDFs (pairs are matched on the DIS number)", type="pdf", accept_multiple_files=True)
-files = list({f.name: f for f in [*folder_files, *uploaded]}.values())      # an uploaded file replaces a folder file of the same name
+files = st.file_uploader("Upload consent and memo PDFs (pairs are matched on the DIS number)", type="pdf", accept_multiple_files=True)
 if not files:
-    st.info("Upload the consent and memo PDFs to begin, or tick **Load PDFs automatically from a folder** in the sidebar. "
-            "Nothing is kept between runs.")
+    st.info("Upload the consent and memo PDFs to begin. Nothing is kept between runs.")
     st.stop()
 
-key = (tuple((f.name, f.size) for f in files), folder_sig)
+key = tuple((f.name, f.size) for f in files)
 if st.session_state.get("key") != key:
     st.session_state["rows"], st.session_state["key"] = analyse(files), key
 rows = st.session_state["rows"]
