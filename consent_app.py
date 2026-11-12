@@ -126,6 +126,13 @@ def scan_folder(folder: str, recursive: bool = False):
     """(sorted list of PDF paths, error text or None). Matches .pdf in any letter case."""
     from pathlib import Path
     folder = clean_path(folder)                                    # pasted paths often carry quotes or trailing spaces
+    import platform
+    host = platform.system()
+    mac_path, win_path = folder.startswith("/Users/"), bool(re.match(r"^[A-Za-z]:[\\/]", folder))
+    if (mac_path and host != "Darwin") or (win_path and host != "Windows"):
+        return [], (f"This app is running on a {host} machine, not on your {'Mac' if mac_path else 'Windows'} computer, so it cannot see "
+                    f"'{folder}'. To load a folder automatically, run the app on your own computer (streamlit run ...). "
+                    "If the app is hosted online, use the upload box below and select all the PDFs.")
     try:
         p = Path(folder).expanduser()
         if not p.is_dir():
